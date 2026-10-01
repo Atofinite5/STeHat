@@ -10,13 +10,19 @@
     "beforeBuildCommand": "pnpm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "WhisperMesh P2P",
-        "width": 1080,
-        "height": 720,
+        "title": "WhisperMesh // Stealth P2P",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 900,
+        "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
