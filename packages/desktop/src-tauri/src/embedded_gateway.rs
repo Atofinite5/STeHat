@@ -1,5 +1,6 @@
 //! embedded_gateway.rs - In-memory embedded local discovery & signaling daemon
 //! Runs directly inside WhisperMesh on port 4000 if no external gateway is active.
+//! Implements Internet AirDrop-style global radar, heartbeats, and pairing handshakes.
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -35,7 +36,7 @@ pub fn spawn_embedded_gateway_if_needed(port: u16) {
 
         let routes = ws_route.with(warp::cors().allow_any_origin());
 
-        println!("[EmbeddedGateway] Starting embedded Space Broker on ws://0.0.0.0:{}", port);
+        println!("[EmbeddedGateway] Global Radar Space Broker listening on ws://0.0.0.0:{}", port);
         warp::serve(routes).run(addr).await;
     });
 }
@@ -86,8 +87,18 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                                 broadcast_snapshot(&peers, &registry).await;
                             }
                         }
+                        "PRESENCE_HEARTBEAT" => {
+                            if let Some(ref dev_id) = registered_device_id {
+                                let mut reg = registry.write().await;
+                                if let Some(peer_val) = reg.get_mut(dev_id) {
+                                    if let Some(obj) = peer_val.as_object_mut() {
+                                        obj.insert("lastSeenTimestamp".to_string(), serde_json::json!(chrono_now_ms()));
+                                        obj.insert("status".to_string(), serde_json::json!("AVAILABLE"));
+                                    }
+                                }
+                            }
+                        }
                         "JOIN_SPACE" => {
-                            // User joins a dedicated unique space address
                             if let Some(space_address) = payload.get("spaceAddress").and_then(|s| s.as_str()) {
                                 current_space = Some(space_address.to_string());
                                 let mut sp_map = spaces.write().await;
@@ -119,7 +130,6 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                             }
                         }
                         "SPACE_SIGNAL" => {
-                            // Relay WebRTC signals (offer/answer/ice) strictly within the space
                             if let Some(space_address) = payload.get("spaceAddress").and_then(|s| s.as_str()) {
                                 let signal = serde_json::json!({
                                     "type": "SPACE_SIGNAL",
@@ -129,7 +139,8 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                             }
                         }
                         "CONNECTION_REQUEST" => {
-                            if let Some(_target_id) = payload.get("targetDeviceId").and_then(|t| t.as_str()) {
+                            // Forward connection request directly to target
+                            if let Some(target_id) = payload.get("targetDeviceId").and_then(|t| t.as_str()) {
                                 let forward = serde_json::json!({
                                     "type": "INCOMING_REQUEST",
                                     "payload": payload
@@ -138,22 +149,11 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                             }
                         }
                         "CONNECTION_ACCEPT" => {
-                            let pairing_code = format!("{:06}", rand::random::<u32>() % 1_000_000);
-                            let challenge = serde_json::json!({
-                                "type": "PAIRING_CHALLENGE",
-                                "payload": {
-                                    "sessionId": payload.get("sessionId").unwrap_or(&serde_json::json!("default")),
-                                    "pairingCode": pairing_code,
-                                    "expiresAt": 60
-                                }
-                            });
-                            broadcast_to_all(&peers, Message::text(challenge.to_string())).await;
-                        }
-                        "PAIRING_CONFIRM" => {
                             let auth = serde_json::json!({
                                 "type": "SIGNALING_AUTHORIZED",
                                 "payload": {
                                     "sessionId": payload.get("sessionId").unwrap_or(&serde_json::json!("default")),
+                                    "targetDeviceId": payload.get("targetDeviceId").unwrap_or(&serde_json::json!("")),
                                     "authorized": true,
                                     "iceServers": [
                                         { "urls": "stun:stun.l.google.com:19302" },
@@ -163,6 +163,13 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                                 }
                             });
                             broadcast_to_all(&peers, Message::text(auth.to_string())).await;
+                        }
+                        "PAIRING_REJECT" => {
+                            let reject = serde_json::json!({
+                                "type": "PAIRING_REJECTED",
+                                "payload": payload
+                            });
+                            broadcast_to_all_except(&peers, &conn_id, Message::text(reject.to_string())).await;
                         }
                         "SIGNAL_OFFER" | "SIGNAL_ANSWER" | "SIGNAL_ICE" => {
                             let signal = serde_json::json!({
@@ -178,7 +185,7 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
         }
     }
 
-    // Cleanup on disconnect
+    // Cleanup on disconnect (Instant offline status for AirDrop radar)
     peers.write().await.remove(&conn_id);
     if let Some(dev_id) = registered_device_id {
         registry.write().await.remove(&dev_id);
@@ -190,6 +197,13 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
             members.retain(|c| c != &conn_id);
         }
     }
+}
+
+fn chrono_now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 async fn broadcast_to_space(peers: &PeersMap, spaces: &SpaceMembersMap, space: &str, except_conn: &str, msg: Message) {

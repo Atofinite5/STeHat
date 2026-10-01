@@ -28,6 +28,7 @@ export class GatewayClient {
   public onPeersUpdated: PresenceListener | null = null;
   public onPairingChallenge: PairingChallengeListener | null = null;
   public onSignalingAuthorized: PairingAuthListener | null = null;
+  public onPairingRejected: (() => void) | null = null;
   public onSignalReceived: SignalListener | null = null;
   public onIncomingRequest: ((req: { sessionId: string; initiatorDevice: any }) => void) | null = null;
   public onConnectionStateChange: ((connected: boolean) => void) | null = null;
@@ -95,7 +96,7 @@ export class GatewayClient {
     this.stopHeartbeat();
     this.heartbeatInterval = window.setInterval(() => {
       this.send('PRESENCE_HEARTBEAT', { timestamp: Date.now() });
-    }, 12000);
+    }, 6000);
   }
 
   private stopHeartbeat(): void {
@@ -153,6 +154,12 @@ export class GatewayClient {
     });
   }
 
+  public rejectPairing(sessionId: string): void {
+    this.send('PAIRING_REJECT', {
+      sessionId
+    });
+  }
+
   public confirmPairingCode(sessionId: string): void {
     this.send('PAIRING_CONFIRM', {
       sessionId
@@ -190,6 +197,10 @@ export class GatewayClient {
 
       case 'SIGNALING_AUTHORIZED':
         this.onSignalingAuthorized?.(envelope.payload);
+        break;
+
+      case 'PAIRING_REJECTED':
+        this.onPairingRejected?.();
         break;
 
       case 'SPACE_JOINED':

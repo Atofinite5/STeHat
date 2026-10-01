@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Shield, Settings, Send, Lock, Wifi, WifiOff, Laptop, Key, RefreshCw, X, Radio, ArrowRight,
-  Download, Plus, Minus, MoreHorizontal, HelpCircle, Check, Copy, Globe, FolderDown
+  Shield, Send, Lock, Wifi, WifiOff, Laptop, Key, RefreshCw, X, Radio, ArrowRight,
+  Download, Plus, Minus, MoreHorizontal, HelpCircle, Check, Copy, Globe, FolderDown,
+  UserCheck, AlertCircle, Sparkles
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { GatewayClient, PresencePeer } from './gatewayClient.js';
@@ -22,6 +23,12 @@ export const App: React.FC = () => {
   const [myOwnSpaceAddress, setMyOwnSpaceAddress] = useState<string>('');
   const [activeSpaceAddress, setActiveSpaceAddress] = useState<string>('');
   
+  // AirDrop-style Global Radar Peers List
+  const [radarPeers, setRadarPeers] = useState<PresencePeer[]>([]);
+  const [pairingTargetPeer, setPairingTargetPeer] = useState<PresencePeer | null>(null);
+  const [pairingState, setPairingState] = useState<'idle' | 'requesting' | 'incoming' | 'paired'>('idle');
+  const [incomingRequest, setIncomingRequest] = useState<any | null>(null);
+
   // macOS "Connect to Space" Window (Command + K)
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
   const [spaceAddressInput, setSpaceAddressInput] = useState<string>('');
@@ -91,7 +98,7 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // 3. Connect to Space Broker Gateway
+  // 3. Connect to Space Broker Gateway (Global Radar & AirDrop Pairing)
   useEffect(() => {
     if (!myOwnSpaceAddress) return;
 
@@ -105,26 +112,42 @@ export const App: React.FC = () => {
       }
     };
 
-    gw.onSpaceJoined = (info) => {
-      console.log('[Space] Successfully joined space:', info);
+    // Live AirDrop Radar Snapshot (Updates whenever any peer turns on or off their laptop)
+    gw.onPeersUpdated = (peers) => {
+      const now = Date.now();
+      // Keep peers who reported within last 20 seconds
+      const activePeers = peers.filter(p => (now - (p.lastSeenTimestamp || now)) < 20000);
+      setRadarPeers(activePeers);
     };
 
-    gw.onPeerJoinedSpace = async (peerInfo) => {
-      console.log('[Space] Peer entered space:', peerInfo);
-      // Auto initiate WebRTC offer to peer in this space
+    // Incoming AirDrop-style Pairing Request from Friend's Mac
+    gw.onIncomingRequest = (req) => {
+      setIncomingRequest(req);
+      setPairingState('incoming');
+    };
+
+    // Handshake Authorized: Start WebRTC Direct Tunnel
+    gw.onSignalingAuthorized = async (auth) => {
+      setPairingState('paired');
       if (webrtcRef.current) {
-        webrtcRef.current.initConnection([
+        webrtcRef.current.initConnection(auth.iceServers || [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun.cloudflare.com:3478' }
         ]);
         try {
-          const offer = await webrtcRef.current.createOffer(activeSpaceAddress);
-          gw.sendSpaceSignal(activeSpaceAddress, 'SIGNAL_OFFER', { offer, senderDeviceId: deviceId });
+          const offer = await webrtcRef.current.createOffer(auth.sessionId);
+          gw.sendSignal('SIGNAL_OFFER', { sessionId: auth.sessionId, offer, senderDeviceId: deviceId });
         } catch (e) {
-          console.error('Error creating space offer:', e);
+          console.error('Error creating offer:', e);
         }
       }
+    };
+
+    gw.onPairingRejected = () => {
+      setPairingState('idle');
+      setPairingTargetPeer(null);
+      alert('The remote laptop declined the connection request.');
     };
 
     gw.onSignalReceived = async (type, payload) => {
@@ -137,7 +160,7 @@ export const App: React.FC = () => {
           { urls: 'stun:stun.cloudflare.com:3478' }
         ]);
         const answer = await webrtcRef.current.handleOfferAndCreateAnswer(payload.offer);
-        gw.sendSpaceSignal(activeSpaceAddress, 'SIGNAL_ANSWER', { answer, senderDeviceId: deviceId });
+        gw.sendSignal('SIGNAL_ANSWER', { sessionId: payload.sessionId, answer, senderDeviceId: deviceId });
       } else if (type === 'SIGNAL_ANSWER' && payload.answer) {
         await webrtcRef.current.handleAnswer(payload.answer);
       } else if (type === 'SIGNAL_ICE' && payload.candidate) {
@@ -147,7 +170,7 @@ export const App: React.FC = () => {
 
     // Initialize WebRTC Manager
     const rtc = new WebRTCManager(
-      (type, payload) => gw.sendSpaceSignal(activeSpaceAddress, type, payload),
+      (type, payload) => gw.sendSignal(type, payload),
       async (p2pMsg: P2PMessage) => {
         const stored: StoredMessage = {
           id: p2pMsg.id,
@@ -188,13 +211,42 @@ export const App: React.FC = () => {
     chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Click on Friend's Laptop in AirDrop Radar to Request Pairing
+  const handleInitiateAirDropPair = (peer: PresencePeer) => {
+    setPairingTargetPeer(peer);
+    setPairingState('requesting');
+    gatewayRef.current?.requestPairing(peer.deviceId);
+  };
+
+  // Accept Incoming Pairing Request
+  const handleAcceptPairing = () => {
+    if (!incomingRequest) return;
+    setPairingTargetPeer({
+      deviceId: incomingRequest.initiatorDevice.deviceId,
+      displayName: incomingRequest.initiatorDevice.displayName,
+      platform: incomingRequest.initiatorDevice.platform,
+      status: 'AVAILABLE',
+      lastSeenTimestamp: Date.now()
+    });
+    gatewayRef.current?.acceptPairing(incomingRequest.sessionId, incomingRequest.initiatorDevice.deviceId);
+    setIncomingRequest(null);
+    setPairingState('paired');
+  };
+
+  // Reject Incoming Pairing Request
+  const handleRejectPairing = () => {
+    if (!incomingRequest) return;
+    gatewayRef.current?.rejectPairing(incomingRequest.sessionId);
+    setIncomingRequest(null);
+    setPairingState('idle');
+  };
+
   // Connect to Remote Space (Action from ⌘K window)
   const handleConnectToSpace = async () => {
     if (!spaceAddressInput.trim()) return;
     const targetSpace = spaceAddressInput.trim().toUpperCase();
     setActiveSpaceAddress(targetSpace);
 
-    // Save to favorites
     const fav: FavoriteSpace = {
       spaceAddress: targetSpace,
       alias: targetSpace,
@@ -204,32 +256,8 @@ export const App: React.FC = () => {
     const updatedFavs = await localVault.getFavoriteSpaces();
     setFavoriteSpaces(updatedFavs);
 
-    // Join space on gateway
     gatewayRef.current?.joinSpace(targetSpace, spaceOtpInput.trim() || '000000');
     setIsConnectModalOpen(false);
-  };
-
-  // Add Favorite
-  const handleAddFavorite = async () => {
-    if (!spaceAddressInput.trim()) return;
-    const targetSpace = spaceAddressInput.trim().toUpperCase();
-    const fav: FavoriteSpace = {
-      spaceAddress: targetSpace,
-      alias: targetSpace,
-      lastConnected: Date.now()
-    };
-    await localVault.addFavoriteSpace(fav);
-    const favs = await localVault.getFavoriteSpaces();
-    setFavoriteSpaces(favs);
-  };
-
-  // Remove Favorite
-  const handleRemoveFavorite = async () => {
-    if (!selectedFavorite) return;
-    await localVault.removeFavoriteSpace(selectedFavorite);
-    const favs = await localVault.getFavoriteSpaces();
-    setFavoriteSpaces(favs);
-    setSelectedFavorite(null);
   };
 
   // Send Direct P2P Message
@@ -250,16 +278,11 @@ export const App: React.FC = () => {
       deliveryStatus: 'sent'
     };
 
-    // Save to Local Vault
     await localVault.saveMessage(stored);
     setMessages((prev) => [...prev, stored]);
     setInputText('');
 
-    // Send over direct WebRTC DataChannel
-    const sent = webrtcRef.current?.sendMessage(p2pMsg);
-    if (!sent) {
-      console.log('Peer not connected yet; message saved locally to Vault.');
-    }
+    webrtcRef.current?.sendMessage(p2pMsg);
   };
 
   // Export / Download Chat Transcript to Laptop
@@ -274,19 +297,12 @@ export const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Copy Space Address
-  const copyMySpace = () => {
-    navigator.clipboard.writeText(myOwnSpaceAddress);
-    setCopiedNotification(true);
-    setTimeout(() => setCopiedNotification(false), 2000);
-  };
-
   return (
     <div style={{
       display: 'flex',
       flexDirection: 'column',
       height: '100vh',
-      background: 'rgba(8, 12, 22, 0.85)',
+      background: 'rgba(8, 12, 22, 0.88)',
       backdropFilter: 'blur(36px)',
       WebkitBackdropFilter: 'blur(36px)',
       color: '#f3f4f6',
@@ -322,14 +338,14 @@ export const App: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase' }}>WhisperMesh</span>
               <span style={{ fontSize: 10, background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', border: '1px solid rgba(52, 211, 153, 0.3)', padding: '2px 8px', borderRadius: 12, fontWeight: 600 }}>
-                GLOBAL P2P
+                AIRDROP OVER INTERNET
               </span>
             </div>
-            <div style={{ fontSize: 11, color: '#6b7280' }}>100% Local Vault Storage • WebRTC NAT Traversal</div>
+            <div style={{ fontSize: 11, color: '#6b7280' }}>Global Live Presence • Direct One-Click Pairing</div>
           </div>
         </div>
 
-        {/* Global Connection & Active Space Badges */}
+        {/* Global Connection & Active Machine Name */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
             display: 'flex',
@@ -343,7 +359,21 @@ export const App: React.FC = () => {
             color: isGatewayConnected ? '#34d399' : '#f87171'
           }}>
             {isGatewayConnected ? <Wifi style={{ width: 14, height: 14 }} /> : <WifiOff style={{ width: 14, height: 14 }} />}
-            <span>{isGatewayConnected ? 'Broker Online' : 'Offline'}</span>
+            <span>{isGatewayConnected ? 'Global Mesh Active' : 'Offline'}</span>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            padding: '4px 12px',
+            borderRadius: 8,
+            fontSize: 12
+          }}>
+            <Laptop style={{ width: 14, height: 14, color: '#9ca3af' }} />
+            <span style={{ color: '#d1d5db' }}>{displayName}</span>
           </div>
 
           <button
@@ -368,124 +398,232 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* ========================================================================= */}
+      {/* AIRDROP INCOMING PAIRING MODAL POPUP (SMOOTH SLIDE DOWN)                  */}
+      {/* ========================================================================= */}
+      {incomingRequest && (
+        <div style={{
+          position: 'absolute',
+          top: 65,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 400,
+          background: 'rgba(20, 28, 48, 0.95)',
+          backdropFilter: 'blur(30px)',
+          border: '1px solid #10b981',
+          borderRadius: 16,
+          padding: '18px 24px',
+          boxShadow: '0 20px 40px rgba(0, 0, 0, 0.8), 0 0 25px rgba(16, 185, 129, 0.4)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 20,
+          minWidth: 460
+        }}>
+          <div style={{
+            width: 48,
+            height: 48,
+            borderRadius: '50%',
+            background: 'rgba(16, 185, 129, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: '1px solid rgba(16, 185, 129, 0.4)'
+          }}>
+            <Laptop style={{ width: 24, height: 24, color: '#34d399' }} />
+          </div>
+
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#ffffff' }}>
+              Pairing Request from {incomingRequest.initiatorDevice.displayName}
+            </div>
+            <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+              Would you like to connect directly over encrypted WebRTC?
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={handleRejectPairing}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                color: '#e5e7eb',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Decline
+            </button>
+            <button
+              onClick={handleAcceptPairing}
+              style={{
+                padding: '8px 18px',
+                borderRadius: 8,
+                background: '#059669',
+                border: 'none',
+                color: '#ffffff',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(5, 150, 105, 0.4)'
+              }}
+            >
+              Accept & Connect
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Glass Workspace */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         
-        {/* Left Sidebar: Machine Unique Space Address & Vault */}
+        {/* Left Sidebar: AirDrop-style Radar & Available Laptops */}
         <aside style={{
-          width: 280,
+          width: 320,
           borderRight: '1px solid rgba(255, 255, 255, 0.08)',
           background: 'rgba(10, 15, 28, 0.65)',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
-          padding: 16
+          padding: 18
         }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             
-            {/* This Laptop's Unique Space Address */}
-            <div style={{
-              padding: 14,
-              borderRadius: 10,
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#34d399', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
-                Your Unique Space Address
-              </div>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                background: 'rgba(0, 0, 0, 0.4)',
-                padding: '8px 12px',
-                borderRadius: 6,
-                border: '1px solid rgba(255, 255, 255, 0.08)'
-              }}>
-                <span style={{ fontSize: 15, fontWeight: 800, fontFamily: 'monospace', letterSpacing: '1px', color: '#60a5fa' }}>
-                  {myOwnSpaceAddress || 'GENERATING...'}
-                </span>
-                <button
-                  onClick={copyMySpace}
-                  title="Copy Space Code to share with your friend"
-                  style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
-                >
-                  {copiedNotification ? <Check style={{ width: 14, height: 14, color: '#10b981' }} /> : <Copy style={{ width: 14, height: 14 }} />}
-                </button>
-              </div>
-              <div style={{ fontSize: 11, color: '#6b7280' }}>
-                Give this code to your friend so they can join your space from any network.
-              </div>
-            </div>
-
-            {/* Active Space Info */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
-                Active P2P Tunnel
-              </div>
-              <div style={{
-                padding: 12,
-                borderRadius: 8,
-                background: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid rgba(255, 255, 255, 0.06)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6
-              }}>
+            {/* Header: AirDrop Radar Title */}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: p2pState === 'connected' ? '#10b981' : '#f59e0b',
-                    boxShadow: p2pState === 'connected' ? '0 0 8px #10b981' : '0 0 8px #f59e0b'
-                  }}></span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
-                    {activeSpaceAddress}
+                  <Radio style={{ width: 16, height: 16, color: '#34d399' }} />
+                  <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#e5e7eb' }}>
+                    AirDrop Global Radar
                   </span>
                 </div>
-                <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                  Direct WebRTC: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b>
-                </div>
+                <span style={{
+                  fontSize: 11,
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  color: '#34d399',
+                  padding: '2px 8px',
+                  borderRadius: 10,
+                  fontWeight: 700
+                }}>
+                  {radarPeers.length} LIVE
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                Active laptops currently online anywhere on the internet. Click to pair.
               </div>
             </div>
 
-            {/* Favorite Spaces Quick List */}
-            {favoriteSpaces.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
-                  Saved Spaces ({favoriteSpaces.length})
+            {/* List of Live Laptops (AirDrop Device Bubble Style) */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {radarPeers.length === 0 ? (
+                <div style={{
+                  padding: 24,
+                  borderRadius: 12,
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px dashed rgba(255, 255, 255, 0.08)',
+                  textAlign: 'center',
+                  color: '#6b7280'
+                }}>
+                  <Laptop style={{ width: 32, height: 32, margin: '0 auto 8px auto', color: '#4b5563' }} />
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#9ca3af' }}>No Other Laptops Online</div>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.4 }}>
+                    When your friend opens WhisperMesh on their Mac, their laptop will appear here instantly.
+                  </div>
                 </div>
-                {favoriteSpaces.map((fav) => (
-                  <button
-                    key={fav.spaceAddress}
-                    onClick={() => {
-                      setActiveSpaceAddress(fav.spaceAddress);
-                      gatewayRef.current?.joinSpace(fav.spaceAddress, '000000');
-                    }}
+              ) : (
+                radarPeers.map((peer) => (
+                  <div
+                    key={peer.deviceId}
                     style={{
+                      padding: 14,
+                      borderRadius: 12,
+                      background: pairingTargetPeer?.deviceId === peer.deviceId ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                      border: pairingTargetPeer?.deviceId === peer.deviceId ? '1px solid #3b82f6' : '1px solid rgba(255, 255, 255, 0.08)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      padding: '8px 12px',
-                      borderRadius: 6,
-                      background: activeSpaceAddress === fav.spaceAddress ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.03)',
-                      border: activeSpaceAddress === fav.spaceAddress ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid transparent',
-                      color: '#fff',
-                      fontSize: 12,
-                      cursor: 'pointer',
-                      textAlign: 'left'
+                      transition: 'all 0.2s ease'
                     }}
                   >
-                    <span>⚡ {fav.alias}</span>
-                    <ArrowRight style={{ width: 12, height: 12, color: '#9ca3af' }} />
-                  </button>
-                ))}
-              </div>
-            )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <div style={{
+                        position: 'relative',
+                        width: 38,
+                        height: 38,
+                        borderRadius: '50%',
+                        background: 'linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.03))',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}>
+                        <Laptop style={{ width: 18, height: 18, color: '#93c5fd' }} />
+                        <span style={{
+                          position: 'absolute',
+                          bottom: 0,
+                          right: 0,
+                          width: 10,
+                          height: 10,
+                          borderRadius: '50%',
+                          background: '#10b981',
+                          border: '2px solid #0b0f19',
+                          boxShadow: '0 0 8px #10b981'
+                        }}></span>
+                      </div>
+
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: '#ffffff' }}>{peer.displayName}</div>
+                        <div style={{ fontSize: 11, color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <span>● Active Now</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleInitiateAirDropPair(peer)}
+                      disabled={pairingState === 'requesting'}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: 8,
+                        background: 'linear-gradient(135deg, #059669, #047857)',
+                        border: 'none',
+                        color: '#ffffff',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)'
+                      }}
+                    >
+                      <Sparkles style={{ width: 12, height: 12 }} />
+                      <span>{pairingState === 'requesting' && pairingTargetPeer?.deviceId === peer.deviceId ? 'Ringing...' : 'Pair'}</span>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Your Device Identity Box */}
+            <div style={{
+              padding: 12,
+              borderRadius: 10,
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>This Mac</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#93c5fd' }}>{displayName}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', fontFamily: 'monospace' }}>{deviceId}</div>
+            </div>
+
           </div>
 
           {/* Bottom Sidebar: Vault Download & ⌘K Connect Button */}
@@ -529,8 +667,8 @@ export const App: React.FC = () => {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Settings style={{ width: 16, height: 16, color: '#60a5fa' }} />
-                <span>Connect to Space</span>
+                <Globe style={{ width: 16, height: 16, color: '#60a5fa' }} />
+                <span>Space Address Book</span>
               </div>
               <span style={{ fontSize: 11, background: 'rgba(255, 255, 255, 0.1)', padding: '2px 6px', borderRadius: 4, color: '#9ca3af' }}>⌘K</span>
             </button>
@@ -559,10 +697,10 @@ export const App: React.FC = () => {
               }}></div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>
-                  Space: {activeSpaceAddress}
+                  {pairingTargetPeer ? `Connected with ${pairingTargetPeer.displayName}` : 'AirDrop P2P Tunnel'}
                 </div>
                 <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                  Encrypted Vault: {messages.length} messages saved locally on this laptop
+                  WebRTC DataChannel: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b> • 100% Local Vault Storage
                 </div>
               </div>
             </div>
@@ -590,9 +728,9 @@ export const App: React.FC = () => {
             {messages.length === 0 ? (
               <div style={{ margin: 'auto', textAlign: 'center', color: '#6b7280' }}>
                 <Lock style={{ width: 44, height: 44, margin: '0 auto 12px auto', color: '#374151' }} />
-                <div style={{ fontSize: 16, fontWeight: 600, color: '#9ca3af', marginBottom: 6 }}>Zero Cloud Persistence</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: '#9ca3af', marginBottom: 6 }}>AirDrop Direct Mesh Connection</div>
                 <div style={{ fontSize: 13, maxWidth: 440, margin: '0 auto', lineHeight: 1.5 }}>
-                  Share your space code <code style={{ color: '#34d399', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: 4 }}>{myOwnSpaceAddress}</code> with your friend or press <b>⌘K</b> to connect to their space address.
+                  Click <b>Pair</b> on any active laptop in the left radar to start an encrypted, direct WebRTC chat session with zero cloud storage.
                 </div>
               </div>
             ) : (
@@ -640,7 +778,7 @@ export const App: React.FC = () => {
           }}>
             <input
               type="text"
-              placeholder={p2pState === 'connected' ? 'Type stealth message to peer...' : 'Type message (will sync directly when peer connects)...'}
+              placeholder={p2pState === 'connected' ? 'Type message over direct WebRTC...' : 'Pair with an active laptop to send direct message...'}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && sendP2PMessage()}
@@ -679,7 +817,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* ========================================================================= */}
-      {/* macOS NATIVE "CONNECT TO SERVER" STYLE DIALOG (MATCHING USER SCREENSHOT)   */}
+      {/* macOS NATIVE "CONNECT TO SERVER" STYLE DIALOG (COMMAND + K)                */}
       {/* ========================================================================= */}
       {isConnectModalOpen && (
         <div style={{
@@ -706,7 +844,6 @@ export const App: React.FC = () => {
             flexDirection: 'column',
             fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif'
           }}>
-            {/* macOS Modal Titlebar with Traffic Lights */}
             <div style={{
               height: 28,
               background: '#262626',
@@ -722,190 +859,64 @@ export const App: React.FC = () => {
                 <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#27c93f' }}></span>
               </div>
               <div style={{ position: 'absolute', width: '100%', left: 0, textAlign: 'center', fontSize: 13, fontWeight: 600, color: '#e5e5e5', pointerEvents: 'none' }}>
-                Connect to Space
+                Connect to Space Address
               </div>
             </div>
 
-            {/* Modal Body */}
             <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-              
-              {/* Space Address Input Field (with blue active glow border matching macOS) */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, color: '#b3b3b3' }}>Space Address:</label>
-                <div style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center'
-                }}>
-                  <input
-                    type="text"
-                    value={spaceAddressInput}
-                    onChange={(e) => setSpaceAddressInput(e.target.value)}
-                    placeholder="e.g. SPACE-ALPHA or friend's space code"
-                    style={{
-                      width: '100%',
-                      background: '#1e1e1e',
-                      border: '1.5px solid #007aff',
-                      boxShadow: '0 0 0 1px #007aff',
-                      borderRadius: 6,
-                      padding: '7px 32px 7px 10px',
-                      color: '#ffffff',
-                      fontSize: 13,
-                      outline: 'none',
-                      fontFamily: 'monospace'
-                    }}
-                  />
-                  <div style={{ position: 'absolute', right: 8, color: '#888', pointerEvents: 'none', fontSize: 11 }}>
-                    ▼
-                  </div>
-                </div>
-              </div>
-
-              {/* 6-Digit OTP / Secret Security Code */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, color: '#b3b3b3' }}>Security Secret / OTP (Optional):</label>
                 <input
                   type="text"
-                  maxLength={6}
-                  value={spaceOtpInput}
-                  onChange={(e) => setSpaceOtpInput(e.target.value)}
-                  placeholder="000000"
+                  value={spaceAddressInput}
+                  onChange={(e) => setSpaceAddressInput(e.target.value)}
+                  placeholder="e.g. SPACE-ALPHA"
                   style={{
                     width: '100%',
                     background: '#1e1e1e',
-                    border: '1px solid #3a3a3a',
+                    border: '1.5px solid #007aff',
+                    boxShadow: '0 0 0 1px #007aff',
                     borderRadius: 6,
                     padding: '7px 10px',
-                    color: '#34d399',
+                    color: '#ffffff',
                     fontSize: 13,
                     outline: 'none',
-                    letterSpacing: '2px',
                     fontFamily: 'monospace'
                   }}
                 />
               </div>
 
-              {/* Favourite Spaces Box (exact macOS list styling) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, color: '#b3b3b3' }}>Favourite Spaces:</label>
-                <div style={{
-                  height: 100,
-                  background: '#1a1a1a',
-                  border: '1px solid #333333',
-                  borderRadius: 4,
-                  overflowY: 'auto'
-                }}>
-                  {favoriteSpaces.length === 0 ? (
-                    <div style={{ color: '#555', fontSize: 12, padding: 10 }}>No favourite spaces added yet.</div>
-                  ) : (
-                    favoriteSpaces.map((fav) => (
-                      <div
-                        key={fav.spaceAddress}
-                        onClick={() => {
-                          setSelectedFavorite(fav.spaceAddress);
-                          setSpaceAddressInput(fav.spaceAddress);
-                        }}
-                        style={{
-                          padding: '6px 10px',
-                          fontSize: 12,
-                          color: selectedFavorite === fav.spaceAddress ? '#ffffff' : '#cccccc',
-                          background: selectedFavorite === fav.spaceAddress ? '#007aff' : 'transparent',
-                          cursor: 'pointer',
-                          fontFamily: 'monospace'
-                        }}
-                      >
-                        ⚡ {fav.spaceAddress}
-                      </div>
-                    ))
-                  )}
-                </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+                <button
+                  onClick={() => setIsConnectModalOpen(false)}
+                  style={{
+                    background: '#333333',
+                    border: '1px solid #444444',
+                    borderRadius: 6,
+                    padding: '6px 14px',
+                    color: '#ffffff',
+                    fontSize: 13,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConnectToSpace}
+                  style={{
+                    background: '#007aff',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '6px 18px',
+                    color: '#ffffff',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Connect
+                </button>
               </div>
-
-              {/* Bottom Control Buttons (Plus, Minus, Options, Browse, Connect) */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{
-                    display: 'flex',
-                    background: '#2a2a2a',
-                    border: '1px solid #3a3a3a',
-                    borderRadius: 5,
-                    overflow: 'hidden'
-                  }}>
-                    <button
-                      onClick={handleAddFavorite}
-                      title="Add current address to favourites"
-                      style={{ padding: '4px 10px', background: 'transparent', border: 'none', color: '#ccc', cursor: 'pointer' }}
-                    >
-                      <Plus style={{ width: 14, height: 14 }} />
-                    </button>
-                    <button
-                      onClick={handleRemoveFavorite}
-                      title="Remove selected favourite"
-                      style={{ padding: '4px 10px', background: 'transparent', borderLeft: '1px solid #3a3a3a', borderRight: '1px solid #3a3a3a', borderTop: 'none', borderBottom: 'none', color: '#ccc', cursor: 'pointer' }}
-                    >
-                      <Minus style={{ width: 14, height: 14 }} />
-                    </button>
-                    <button
-                      onClick={() => setSpaceAddressInput(myOwnSpaceAddress)}
-                      title="Restore my own unique space code"
-                      style={{ padding: '4px 10px', background: 'transparent', border: 'none', color: '#ccc', cursor: 'pointer' }}
-                    >
-                      <MoreHorizontal style={{ width: 14, height: 14 }} />
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={() => alert(`WhisperMesh Space Architecture:\n• Space Code: ${myOwnSpaceAddress}\n• All chats are stored 100% locally in your Mac's Vault.\n• STUN servers punch through firewalls across different Wi-Fi/networks.`)}
-                    style={{
-                      width: 26,
-                      height: 26,
-                      borderRadius: 13,
-                      background: '#2a2a2a',
-                      border: '1px solid #3a3a3a',
-                      color: '#aaa',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <HelpCircle style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    onClick={() => setIsConnectModalOpen(false)}
-                    style={{
-                      background: '#333333',
-                      border: '1px solid #444444',
-                      borderRadius: 6,
-                      padding: '6px 14px',
-                      color: '#ffffff',
-                      fontSize: 13,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleConnectToSpace}
-                    style={{
-                      background: '#007aff',
-                      border: 'none',
-                      borderRadius: 6,
-                      padding: '6px 18px',
-                      color: '#ffffff',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Connect
-                  </button>
-                </div>
-              </div>
-
             </div>
           </div>
         </div>
