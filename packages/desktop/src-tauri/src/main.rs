@@ -16,6 +16,22 @@ fn get_or_create_device_identity() -> Result<IdentityKeys, String> {
 }
 
 #[tauri::command]
+fn get_lan_ip() -> Result<String, String> {
+    // Return primary LAN IP for sharing with peer laptops
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("ipconfig getifaddr en0 || ipconfig getifaddr en1 || echo '127.0.0.1'")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() {
+        Ok("127.0.0.1".into())
+    } else {
+        Ok(ip)
+    }
+}
+
+#[tauri::command]
 fn sign_challenge(private_seed_b64: String, challenge: String) -> Result<String, String> {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine;
@@ -24,7 +40,7 @@ fn sign_challenge(private_seed_b64: String, challenge: String) -> Result<String,
 }
 
 fn main() {
-    // Start embedded discovery broker on 127.0.0.1:4000 if no external server is present
+    // Start embedded discovery broker on 0.0.0.0:4000
     embedded_gateway::spawn_embedded_gateway_if_needed(4000);
 
     tauri::Builder::default()
@@ -37,6 +53,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_or_create_device_identity,
+            get_lan_ip,
             sign_challenge
         ])
         .run(tauri::generate_context!())

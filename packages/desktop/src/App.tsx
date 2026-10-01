@@ -1,18 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Shield, Radio, Bot, Lock, CheckCircle2, Send, RefreshCw, 
-  Terminal, Wifi, WifiOff, Laptop, Key, Sparkles, Activity, MessageSquare
+  Wifi, WifiOff, Laptop, Key, Sparkles, Activity, MessageSquare, Share2, Globe
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { GatewayClient, PresencePeer } from './gatewayClient.js';
 import { WebRTCManager, P2PMessage } from './webrtc.js';
 
 export const App: React.FC = () => {
-  // Machine Identity & Settings
+  // Machine Identity & Network Settings
   const [deviceId, setDeviceId] = useState<string>('local-mac-' + Math.random().toString(36).substring(2, 6));
   const [displayName, setDisplayName] = useState<string>('MacBook Pro (Local)');
   const [publicKeyEd25519, setPublicKeyEd25519] = useState<string>('Generating hardware keys...');
   const [isGatewayConnected, setIsGatewayConnected] = useState<boolean>(false);
+  const [lanIp, setLanIp] = useState<string>('127.0.0.1');
+  const [gatewayUrl, setGatewayUrl] = useState<string>(() => {
+    return localStorage.getItem('whispermesh_gateway_url') || 'ws://localhost:4000/v1/gateway';
+  });
 
   // View States
   const [activeTab, setActiveTab] = useState<'presence' | 'chat' | 'agent' | 'telemetry'>('presence');
@@ -41,7 +45,7 @@ export const App: React.FC = () => {
   const webrtcRef = useRef<WebRTCManager | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // 1. Initialize Native Tauri Cryptographic Identity
+  // 1. Initialize Native Tauri Cryptographic Identity & Network IP
   useEffect(() => {
     async function loadIdentity() {
       try {
@@ -52,13 +56,20 @@ export const App: React.FC = () => {
         console.warn('Tauri IPC fallback:', err);
         setPublicKeyEd25519('ed25519_local_key_simulated_hardware_enclave');
       }
+
+      try {
+        const ip = await invoke<string>('get_lan_ip');
+        if (ip) setLanIp(ip);
+      } catch (err) {
+        console.warn('LAN IP fetch fallback:', err);
+      }
     }
     loadIdentity();
   }, []);
 
   // 2. Connect to Live Dynamic Signaling Gateway
   useEffect(() => {
-    const gw = new GatewayClient('ws://localhost:4000/v1/gateway', deviceId, displayName);
+    const gw = new GatewayClient(gatewayUrl, deviceId, displayName);
     gatewayRef.current = gw;
 
     gw.onConnectionStateChange = (connected) => {
@@ -83,7 +94,6 @@ export const App: React.FC = () => {
       setPairingStatus('authorized');
       if (webrtcRef.current) {
         webrtcRef.current.initConnection(auth.iceServers);
-        // If initiator, generate SDP Offer
         try {
           const offer = await webrtcRef.current.createOffer(auth.sessionId);
           gw.sendSignal('SIGNAL_OFFER', { sessionId: auth.sessionId, offer });
@@ -126,7 +136,7 @@ export const App: React.FC = () => {
       gw.disconnect();
       rtc.close();
     };
-  }, [deviceId]);
+  }, [deviceId, gatewayUrl]);
 
   // Auto-scroll chat window
   useEffect(() => {
@@ -176,14 +186,12 @@ export const App: React.FC = () => {
       timestamp: Date.now()
     };
 
-    // Send through WebRTC DataChannel directly to peer
     const sent = webrtcRef.current?.sendMessage(msg);
     if (sent) {
       setMessages((prev) => [...prev, msg]);
       setInputText('');
     } else {
-      // If data channel is not yet established, show alert
-      alert('P2P Direct DataChannel is not open yet. Wait for WebRTC handshake or connect with another laptop.');
+      alert('P2P Direct DataChannel is not open yet. Please wait for WebRTC handshake or connect with a peer laptop.');
     }
   };
 
@@ -223,12 +231,12 @@ export const App: React.FC = () => {
       userSelect: 'none',
       overflow: 'hidden'
     }}>
-      {/* Stealth Glass Top Titlebar (Draggable on Mac) */}
+      {/* Stealth Glass Top Titlebar */}
       <header data-tauri-drag-region style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '14px 22px 14px 80px', // Extra left padding for native macOS window controls
+        padding: '14px 22px 14px 80px',
         borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
         background: 'rgba(15, 23, 42, 0.45)',
         backdropFilter: 'blur(20px)'
@@ -258,7 +266,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* Global Connection & Identity Badges */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -271,7 +279,7 @@ export const App: React.FC = () => {
             color: isGatewayConnected ? '#34d399' : '#f87171'
           }}>
             {isGatewayConnected ? <Wifi style={{ width: 14, height: 14 }} /> : <WifiOff style={{ width: 14, height: 14 }} />}
-            <span>{isGatewayConnected ? 'Mesh Discovery Online' : 'Gateway Offline (Local Only)'}</span>
+            <span>{isGatewayConnected ? 'Mesh Discovery Online' : 'Gateway Offline'}</span>
           </div>
 
           <div style={{
@@ -452,10 +460,10 @@ export const App: React.FC = () => {
             }}
           >
             <Activity style={{ width: 16, height: 16 }} />
-            <span>Hardware Telemetry</span>
+            <span>LAN & Telemetry</span>
           </button>
 
-          {/* Secure Hardware Enclave Box */}
+          {/* Peer Laptop Connection Box */}
           <div style={{
             marginTop: 'auto',
             padding: 12,
@@ -463,11 +471,12 @@ export const App: React.FC = () => {
             background: 'rgba(255, 255, 255, 0.03)',
             border: '1px solid rgba(255, 255, 255, 0.06)'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#9ca3af', marginBottom: 4 }}>
-              <Lock style={{ width: 12, height: 12, color: '#10b981' }} /> Local Ed25519 Enclave
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#34d399', marginBottom: 4 }}>
+              <Share2 style={{ width: 12, height: 12 }} /> Share with Friend's Laptop
             </div>
-            <div style={{ fontSize: 10, fontFamily: 'monospace', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {publicKeyEd25519}
+            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>Your Wi-Fi Endpoint:</div>
+            <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#60a5fa', background: 'rgba(0,0,0,0.3)', padding: '4px 6px', borderRadius: 4 }}>
+              ws://{lanIp}:4000/v1/gateway
             </div>
           </div>
         </nav>
@@ -482,27 +491,53 @@ export const App: React.FC = () => {
                 <div>
                   <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 6px 0', letterSpacing: '-0.3px' }}>Discovered Global Peers</h2>
                   <p style={{ margin: 0, color: '#9ca3af', fontSize: 13 }}>
-                    Live machines connected to the mesh network. Click to initiate mutual 6-digit cryptographic pairing.
+                    Live laptops and clients connected to this network. Click to initiate mutual 6-digit cryptographic pairing.
                   </p>
                 </div>
-                <button
-                  onClick={() => gatewayRef.current?.connect()}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    background: 'rgba(59, 130, 246, 0.2)',
-                    border: '1px solid rgba(59, 130, 246, 0.4)',
-                    color: '#93c5fd',
-                    padding: '8px 16px',
-                    borderRadius: 8,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  <RefreshCw style={{ width: 14, height: 14 }} /> Refresh Presence
-                </button>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    onClick={() => {
+                      const newUrl = prompt("Enter Gateway WebSocket URL (e.g. your friend's ws://192.168.1.X:4000/v1/gateway):", gatewayUrl);
+                      if (newUrl) {
+                        localStorage.setItem('whispermesh_gateway_url', newUrl);
+                        setGatewayUrl(newUrl);
+                      }
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      color: '#fff',
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Globe style={{ width: 14, height: 14 }} /> Connect to Friend's IP
+                  </button>
+                  <button
+                    onClick={() => gatewayRef.current?.connect()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      background: 'rgba(59, 130, 246, 0.2)',
+                      border: '1px solid rgba(59, 130, 246, 0.4)',
+                      color: '#93c5fd',
+                      padding: '8px 16px',
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <RefreshCw style={{ width: 14, height: 14 }} /> Refresh Presence
+                  </button>
+                </div>
               </div>
 
               {peers.length === 0 ? (
@@ -515,9 +550,10 @@ export const App: React.FC = () => {
                   color: '#6b7280'
                 }}>
                   <Radio style={{ width: 36, height: 36, margin: '0 auto 12px auto', color: '#4b5563' }} />
-                  <div style={{ fontSize: 15, fontWeight: 600, color: '#9ca3af', marginBottom: 4 }}>Listening on Mesh Gateway...</div>
-                  <div style={{ fontSize: 13, maxWidth: 440, margin: '0 auto' }}>
-                    Open WhisperMesh on another laptop or in a second browser window to discover it here instantly and pair.
+                  <div style={{ fontSize: 15, fontWeight: 600, color: '#9ca3af', marginBottom: 4 }}>Listening for Nearby Laptops...</div>
+                  <div style={{ fontSize: 13, maxWidth: 480, margin: '0 auto', lineHeight: 1.5 }}>
+                    Give the <b>WhisperMesh_1.0.0_aarch64.dmg</b> to your friend or open a second window locally.<br/>
+                    Your friend simply clicks <b>"Connect to Friend's IP"</b> and enters: <code style={{ color: '#34d399', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: 4 }}>ws://{lanIp}:4000/v1/gateway</code>
                   </div>
                 </div>
               ) : (
@@ -599,7 +635,7 @@ export const App: React.FC = () => {
                       {activePeer ? activePeer.displayName : 'Awaiting Peer Selection'}
                     </div>
                     <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                      WebRTC DataChannel Status: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b>
+                      WebRTC DataChannel: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b>
                     </div>
                   </div>
                 </div>

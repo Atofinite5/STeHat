@@ -12,8 +12,7 @@ type PresenceRegistry = Arc<RwLock<HashMap<String, serde_json::Value>>>;
 
 pub fn spawn_embedded_gateway_if_needed(port: u16) {
     tokio::spawn(async move {
-        // Try binding port
-        let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+        let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
         
         let peers: PeersMap = Arc::new(RwLock::new(HashMap::new()));
         let registry: PresenceRegistry = Arc::new(RwLock::new(HashMap::new()));
@@ -32,7 +31,7 @@ pub fn spawn_embedded_gateway_if_needed(port: u16) {
 
         let routes = ws_route.with(warp::cors().allow_any_origin());
 
-        println!("[EmbeddedGateway] Starting embedded discovery broker on ws://127.0.0.1:{}", port);
+        println!("[EmbeddedGateway] Starting embedded discovery broker on ws://0.0.0.0:{}", port);
         warp::serve(routes).run(addr).await;
     });
 }
