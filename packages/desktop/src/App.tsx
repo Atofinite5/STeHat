@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Shield, Send, Lock, Wifi, WifiOff, Laptop, Check, Download, 
-  FolderDown, Sparkles, Radio, MessageSquare, Monitor, Smartphone, RefreshCw
+  FolderDown, Sparkles, Radio, MessageSquare, Monitor, Smartphone, RefreshCw,
+  Sliders, X, Power
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { GatewayClient, PresencePeer } from './gatewayClient.js';
@@ -22,6 +23,9 @@ export const App: React.FC = () => {
   const [pairedDevice, setPairedDevice] = useState<PresencePeer | null>(null);
   const [isPairingPending, setIsPairingPending] = useState<boolean>(false);
   const [incomingRequest, setIncomingRequest] = useState<any | null>(null);
+
+  // Toggle Panel (Controlled by Command + K)
+  const [isPanelToggled, setIsPanelToggled] = useState<boolean>(true);
 
   // Live P2P Chat State
   const [p2pState, setP2pState] = useState<'disconnected' | 'connecting' | 'connected' | 'failed'>('disconnected');
@@ -56,7 +60,34 @@ export const App: React.FC = () => {
     loadIdentity();
   }, []);
 
-  // 2. Connect to the Wi-Fi Mesh Gateway
+  // 2. Keyboard Shortcuts: Cmd + K (Toggle Device Panel) & Cmd + Q (Quit App)
+  useEffect(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      // Command + K or Ctrl + K: Toggle Devices & Mesh Sidebar
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsPanelToggled((prev) => !prev);
+      }
+
+      // Command + Q or Ctrl + Q: Clean Quit Application
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          await getCurrentWindow().close();
+        } catch (_) {
+          window.close();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, []);
+
+  // 3. Connect to the Wi-Fi Mesh Gateway
   useEffect(() => {
     const gw = new GatewayClient(activeHostUrl, deviceId, displayName);
     gatewayRef.current = gw;
@@ -65,19 +96,16 @@ export const App: React.FC = () => {
       setIsMeshConnected(connected);
     };
 
-    // Live Devices on Same Wi-Fi (Automatically appears when laptop opens app, disappears when closed)
     gw.onPeersUpdated = (peers) => {
       const now = Date.now();
       const active = peers.filter(p => (now - (p.lastSeenTimestamp || now)) < 25000);
       setOnlineDevices(active);
     };
 
-    // Incoming Pairing Request from another laptop on Wi-Fi
     gw.onIncomingRequest = (req) => {
       setIncomingRequest(req);
     };
 
-    // Pairing Authorized: Begin direct WebRTC DataChannel
     gw.onSignalingAuthorized = async (auth) => {
       setIsPairingPending(false);
       if (webrtcRef.current) {
@@ -111,7 +139,6 @@ export const App: React.FC = () => {
       }
     };
 
-    // Native WebRTC Manager
     const rtc = new WebRTCManager(
       (type, payload) => gw.sendSignal(type, payload),
       async (p2pMsg: P2PMessage) => {
@@ -220,6 +247,16 @@ export const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  // Manual Quit
+  const handleManualQuit = async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().close();
+    } catch (_) {
+      window.close();
+    }
+  };
+
   return (
     <div style={{
       display: 'flex',
@@ -263,12 +300,36 @@ export const App: React.FC = () => {
                 WI-FI MESH
               </span>
             </div>
-            <div style={{ fontSize: 11, color: '#6b7280' }}>Local Wi-Fi / Hotspot Shield Network • Direct Device Pairing</div>
+            <div style={{ fontSize: 11, color: '#6b7280' }}>Local Wi-Fi Network • Direct Device Pairing</div>
           </div>
         </div>
 
-        {/* Local Wi-Fi Status */}
+        {/* Shortcuts & Status Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Toggle Sidebar Button (Cmd + K) */}
+          <button
+            onClick={() => setIsPanelToggled((prev) => !prev)}
+            title="Toggle Devices Sidebar (⌘K)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              background: isPanelToggled ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+              border: isPanelToggled ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: 8,
+              padding: '6px 12px',
+              color: isPanelToggled ? '#93c5fd' : '#9ca3af',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+          >
+            <Sliders style={{ width: 14, height: 14 }} />
+            <span>Devices</span>
+            <span style={{ fontSize: 10, background: 'rgba(255, 255, 255, 0.1)', padding: '1px 5px', borderRadius: 4, color: '#d1d5db' }}>⌘K</span>
+          </button>
+
+          {/* Wi-Fi Online Status */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -281,22 +342,31 @@ export const App: React.FC = () => {
             color: isMeshConnected ? '#34d399' : '#f87171'
           }}>
             {isMeshConnected ? <Wifi style={{ width: 14, height: 14 }} /> : <WifiOff style={{ width: 14, height: 14 }} />}
-            <span>{isMeshConnected ? `Wi-Fi Online (${lanIp})` : 'Offline'}</span>
+            <span>{isMeshConnected ? `Online (${lanIp})` : 'Offline'}</span>
           </div>
 
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            background: 'rgba(255, 255, 255, 0.05)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            padding: '5px 12px',
-            borderRadius: 8,
-            fontSize: 12
-          }}>
-            <Laptop style={{ width: 14, height: 14, color: '#9ca3af' }} />
-            <span style={{ color: '#d1d5db', fontWeight: 600 }}>{displayName}</span>
-          </div>
+          {/* Quit Button (Cmd + Q) */}
+          <button
+            onClick={handleManualQuit}
+            title="Quit Application (⌘Q)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              borderRadius: 8,
+              padding: '6px 12px',
+              color: '#f87171',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+          >
+            <Power style={{ width: 13, height: 13 }} />
+            <span>Quit</span>
+            <span style={{ fontSize: 10, background: 'rgba(239, 68, 68, 0.2)', padding: '1px 5px', borderRadius: 4, color: '#fca5a5' }}>⌘Q</span>
+          </button>
         </div>
       </header>
 
@@ -382,233 +452,236 @@ export const App: React.FC = () => {
       {/* Main Workspace */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         
-        {/* Left Sidebar: Visible Devices on Same Wi-Fi */}
-        <aside style={{
-          width: 320,
-          borderRight: '1px solid rgba(255, 255, 255, 0.08)',
-          background: 'rgba(11, 17, 32, 0.8)',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'space-between',
-          padding: 20
-        }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            
-            {/* Devices on Wi-Fi Section */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Radio style={{ width: 16, height: 16, color: '#34d399' }} />
-                  <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#e5e7eb' }}>
-                    Same Wi-Fi Devices
+        {/* Left Sidebar: Visible Devices on Same Wi-Fi (Toggled via Cmd + K) */}
+        {isPanelToggled && (
+          <aside style={{
+            width: 320,
+            borderRight: '1px solid rgba(255, 255, 255, 0.08)',
+            background: 'rgba(11, 17, 32, 0.8)',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+            padding: 20,
+            transition: 'all 0.3s ease'
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              
+              {/* Devices on Wi-Fi Section */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Radio style={{ width: 16, height: 16, color: '#34d399' }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#e5e7eb' }}>
+                      Same Wi-Fi Devices
+                    </span>
+                  </div>
+                  <span style={{
+                    fontSize: 11,
+                    background: onlineDevices.length > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
+                    color: onlineDevices.length > 0 ? '#34d399' : '#9ca3af',
+                    padding: '2px 8px',
+                    borderRadius: 10,
+                    fontWeight: 700
+                  }}>
+                    {onlineDevices.length} ON WI-FI
                   </span>
                 </div>
-                <span style={{
-                  fontSize: 11,
-                  background: onlineDevices.length > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
-                  color: onlineDevices.length > 0 ? '#34d399' : '#9ca3af',
-                  padding: '2px 8px',
-                  borderRadius: 10,
-                  fontWeight: 700
-                }}>
-                  {onlineDevices.length} ON WI-FI
-                </span>
-              </div>
-              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-                Laptops, Macs, or PCs connected to this Wi-Fi network.
-              </div>
-            </div>
-
-            {/* List of Visible Devices */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {onlineDevices.length === 0 ? (
-                <div style={{
-                  padding: '28px 16px',
-                  borderRadius: 14,
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px dashed rgba(255, 255, 255, 0.08)',
-                  textAlign: 'center',
-                  color: '#6b7280'
-                }}>
-                  <Laptop style={{ width: 36, height: 36, margin: '0 auto 10px auto', color: '#4b5563' }} />
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#9ca3af' }}>Waiting for nearby laptops...</div>
-                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6, lineHeight: 1.4 }}>
-                    When another person on this Wi-Fi or Hotspot opens WhisperMesh, their laptop will appear here.
-                  </div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                  Toggle with <b style={{ color: '#93c5fd' }}>⌘K</b> anytime.
                 </div>
-              ) : (
-                onlineDevices.map((device) => {
-                  const isCurrentlyPaired = pairedDevice?.deviceId === device.deviceId;
-                  return (
-                    <div
-                      key={device.deviceId}
-                      style={{
-                        padding: 14,
-                        borderRadius: 14,
-                        background: isCurrentlyPaired ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.04)',
-                        border: isCurrentlyPaired ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.08)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        transition: 'all 0.2s ease'
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{
-                          position: 'relative',
-                          width: 40,
-                          height: 40,
-                          borderRadius: '50%',
-                          background: 'linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.02))',
-                          border: '1px solid rgba(255,255,255,0.15)',
+              </div>
+
+              {/* List of Visible Devices */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {onlineDevices.length === 0 ? (
+                  <div style={{
+                    padding: '28px 16px',
+                    borderRadius: 14,
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px dashed rgba(255, 255, 255, 0.08)',
+                    textAlign: 'center',
+                    color: '#6b7280'
+                  }}>
+                    <Laptop style={{ width: 36, height: 36, margin: '0 auto 10px auto', color: '#4b5563' }} />
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#9ca3af' }}>Waiting for nearby laptops...</div>
+                    <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6, lineHeight: 1.4 }}>
+                      When another person on this Wi-Fi or Hotspot opens WhisperMesh, their laptop will appear here.
+                    </div>
+                  </div>
+                ) : (
+                  onlineDevices.map((device) => {
+                    const isCurrentlyPaired = pairedDevice?.deviceId === device.deviceId;
+                    return (
+                      <div
+                        key={device.deviceId}
+                        style={{
+                          padding: 14,
+                          borderRadius: 14,
+                          background: isCurrentlyPaired ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                          border: isCurrentlyPaired ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.08)',
                           display: 'flex',
                           alignItems: 'center',
-                          justifyContent: 'center'
-                        }}>
-                          <Laptop style={{ width: 20, height: 20, color: '#93c5fd' }} />
-                          <span style={{
-                            position: 'absolute',
-                            bottom: 0,
-                            right: 0,
-                            width: 10,
-                            height: 10,
+                          justifyContent: 'space-between',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <div style={{
+                            position: 'relative',
+                            width: 40,
+                            height: 40,
                             borderRadius: '50%',
-                            background: '#10b981',
-                            border: '2px solid #0b1120',
-                            boxShadow: '0 0 8px #10b981'
-                          }}></span>
-                        </div>
+                            background: 'linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.02))',
+                            border: '1px solid rgba(255,255,255,0.15)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}>
+                            <Laptop style={{ width: 20, height: 20, color: '#93c5fd' }} />
+                            <span style={{
+                              position: 'absolute',
+                              bottom: 0,
+                              right: 0,
+                              width: 10,
+                              height: 10,
+                              borderRadius: '50%',
+                              background: '#10b981',
+                              border: '2px solid #0b1120',
+                              boxShadow: '0 0 8px #10b981'
+                            }}></span>
+                          </div>
 
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 14, color: '#ffffff' }}>{device.displayName}</div>
-                          <div style={{ fontSize: 11, color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span>● Connected on Wi-Fi</span>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 14, color: '#ffffff' }}>{device.displayName}</div>
+                            <div style={{ fontSize: 11, color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span>● Connected on Wi-Fi</span>
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      {isCurrentlyPaired ? (
-                        <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          fontSize: 12,
-                          fontWeight: 700,
-                          color: '#34d399',
-                          background: 'rgba(16, 185, 129, 0.2)',
-                          padding: '6px 12px',
-                          borderRadius: 8
-                        }}>
-                          <Check style={{ width: 14, height: 14 }} /> Paired
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleDirectClickPair(device)}
-                          disabled={isPairingPending}
-                          style={{
-                            padding: '7px 16px',
-                            borderRadius: 8,
-                            background: 'linear-gradient(135deg, #059669, #047857)',
-                            border: 'none',
-                            color: '#ffffff',
-                            fontSize: 12,
-                            fontWeight: 600,
-                            cursor: 'pointer',
+                        {isCurrentlyPaired ? (
+                          <div style={{
                             display: 'flex',
                             alignItems: 'center',
                             gap: 6,
-                            boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)'
-                          }}
-                        >
-                          <Sparkles style={{ width: 12, height: 12 }} />
-                          <span>{isPairingPending && pairedDevice?.deviceId === device.deviceId ? 'Connecting...' : 'Pair'}</span>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Direct Connect to Friend's IP (if on Hotspot Shield or separate subnet) */}
-            <div style={{
-              padding: 12,
-              borderRadius: 10,
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid rgba(255, 255, 255, 0.06)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase' }}>
-                Join Friend's Hotspot / Wi-Fi IP
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: '#34d399',
+                            background: 'rgba(16, 185, 129, 0.2)',
+                            padding: '6px 12px',
+                            borderRadius: 8
+                          }}>
+                            <Check style={{ width: 14, height: 14 }} /> Paired
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleDirectClickPair(device)}
+                            disabled={isPairingPending}
+                            style={{
+                              padding: '7px 16px',
+                              borderRadius: 8,
+                              background: 'linear-gradient(135deg, #059669, #047857)',
+                              border: 'none',
+                              color: '#ffffff',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)'
+                            }}
+                          >
+                            <Sparkles style={{ width: 12, height: 12 }} />
+                            <span>{isPairingPending && pairedDevice?.deviceId === device.deviceId ? 'Connecting...' : 'Pair'}</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input
-                  type="text"
-                  placeholder="e.g. 192.168.1.150"
-                  value={hostIpInput}
-                  onChange={(e) => setHostIpInput(e.target.value)}
-                  style={{
-                    flex: 1,
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: 6,
-                    padding: '6px 8px',
-                    fontSize: 12,
-                    color: '#fff',
-                    outline: 'none',
-                    fontFamily: 'monospace'
-                  }}
-                />
-                <button
-                  onClick={handleConnectToFriendIp}
-                  style={{
-                    background: '#2563eb',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 12px',
-                    color: '#fff',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Join
-                </button>
-              </div>
-              <div style={{ fontSize: 10, color: '#6b7280' }}>
-                Your IP: <b style={{ color: '#34d399' }}>{lanIp}</b> (Port 4000)
-              </div>
-            </div>
 
-          </div>
-
-          {/* Bottom Sidebar: Chat Download */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 16 }}>
-            <button
-              onClick={handleDownloadTranscript}
-              title="Download entire chat history to your laptop (Markdown)"
-              style={{
+              {/* Direct Connect to Friend's IP */}
+              <div style={{
+                padding: 12,
+                borderRadius: 10,
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                padding: '11px 14px',
-                borderRadius: 8,
-                background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: '#e5e7eb',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              <FolderDown style={{ width: 15, height: 15, color: '#34d399' }} />
-              <span>Download Chat Transcript</span>
-            </button>
-          </div>
-        </aside>
+                flexDirection: 'column',
+                gap: 8
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase' }}>
+                  Join Friend's Hotspot / Wi-Fi IP
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="e.g. 192.168.1.150"
+                    value={hostIpInput}
+                    onChange={(e) => setHostIpInput(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: 6,
+                      padding: '6px 8px',
+                      fontSize: 12,
+                      color: '#fff',
+                      outline: 'none',
+                      fontFamily: 'monospace'
+                    }}
+                  />
+                  <button
+                    onClick={handleConnectToFriendIp}
+                    style={{
+                      background: '#2563eb',
+                      border: 'none',
+                      borderRadius: 6,
+                      padding: '6px 12px',
+                      color: '#fff',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Join
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: '#6b7280' }}>
+                  Your IP: <b style={{ color: '#34d399' }}>{lanIp}</b>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Bottom Sidebar: Chat Download */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 16 }}>
+              <button
+                onClick={handleDownloadTranscript}
+                title="Download entire chat history to your laptop (Markdown)"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  padding: '11px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#e5e7eb',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                <FolderDown style={{ width: 15, height: 15, color: '#34d399' }} />
+                <span>Download Chat Transcript</span>
+              </button>
+            </div>
+          </aside>
+        )}
 
         {/* Center: Live Tauri Chat Stream */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -635,7 +708,7 @@ export const App: React.FC = () => {
                   {pairedDevice ? `Direct Chat with ${pairedDevice.displayName}` : 'Tauri Wi-Fi Chatting Panel'}
                 </div>
                 <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                  WebRTC Direct: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b> • 100% Local Device Storage
+                  WebRTC Direct: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b> • Press <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4, color: '#fff' }}>⌘K</kbd> to toggle device list
                 </div>
               </div>
             </div>
@@ -669,7 +742,7 @@ export const App: React.FC = () => {
                 <div style={{ fontSize: 13, maxWidth: 440, margin: '0 auto', lineHeight: 1.5 }}>
                   {pairedDevice 
                     ? 'Type a message below to chat directly across your laptops over the Wi-Fi connection.'
-                    : 'Click "Pair" on your friend’s laptop card in the left sidebar to connect directly.'}
+                    : 'Click "Pair" on your friend’s laptop card in the sidebar (press ⌘K to toggle) to connect directly.'}
                 </div>
               </div>
             ) : (
