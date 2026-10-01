@@ -1,6 +1,6 @@
 //! embedded_gateway.rs - In-memory embedded local discovery & signaling daemon
-//! Runs directly inside WhisperMesh on port 4000 if no external gateway is active.
-//! Implements Internet AirDrop-style global radar, heartbeats, and pairing handshakes.
+//! Runs directly inside WhisperMesh on port 4000.
+//! Implements local Wi-Fi / Hotspot mesh presence, heartbeat, and pairing handshakes.
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -10,7 +10,6 @@ use futures_util::{StreamExt, SinkExt};
 
 type PeersMap = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
 type PresenceRegistry = Arc<RwLock<HashMap<String, serde_json::Value>>>;
-type SpaceMembersMap = Arc<RwLock<HashMap<String, Vec<String>>>>; // space_address -> Vec<conn_id>
 
 pub fn spawn_embedded_gateway_if_needed(port: u16) {
     tokio::spawn(async move {
@@ -18,30 +17,27 @@ pub fn spawn_embedded_gateway_if_needed(port: u16) {
         
         let peers: PeersMap = Arc::new(RwLock::new(HashMap::new()));
         let registry: PresenceRegistry = Arc::new(RwLock::new(HashMap::new()));
-        let spaces: SpaceMembersMap = Arc::new(RwLock::new(HashMap::new()));
 
         let peers_filter = warp::any().map(move || peers.clone());
         let registry_filter = warp::any().map(move || registry.clone());
-        let spaces_filter = warp::any().map(move || spaces.clone());
 
         let ws_route = warp::path("v1")
             .and(warp::path("gateway"))
             .and(warp::ws())
             .and(peers_filter)
             .and(registry_filter)
-            .and(spaces_filter)
-            .map(|ws: warp::ws::Ws, p: PeersMap, r: PresenceRegistry, s: SpaceMembersMap| {
-                ws.on_upgrade(move |socket| handle_connection(socket, p, r, s))
+            .map(|ws: warp::ws::Ws, p: PeersMap, r: PresenceRegistry| {
+                ws.on_upgrade(move |socket| handle_connection(socket, p, r))
             });
 
         let routes = ws_route.with(warp::cors().allow_any_origin());
 
-        println!("[EmbeddedGateway] Global Radar Space Broker listening on ws://0.0.0.0:{}", port);
+        println!("[EmbeddedGateway] Wi-Fi Mesh Broker listening on ws://0.0.0.0:{}", port);
         warp::serve(routes).run(addr).await;
     });
 }
 
-async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceRegistry, spaces: SpaceMembersMap) {
+async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceRegistry) {
     let (mut user_ws_tx, mut user_ws_rx) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let conn_id = uuid::Uuid::new_v4().to_string();
@@ -54,7 +50,7 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
 
     peers.write().await.insert(conn_id.clone(), tx.clone());
 
-    // Send initial snapshot
+    // Send initial snapshot of all devices on this Wi-Fi
     {
         let reg = registry.read().await;
         let peers_list: Vec<serde_json::Value> = reg.values().cloned().collect();
@@ -68,7 +64,6 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
     }
 
     let mut registered_device_id: Option<String> = None;
-    let mut current_space: Option<String> = None;
 
     while let Some(result) = user_ws_rx.next().await {
         if let Ok(msg) = result {
@@ -83,7 +78,7 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                                 registered_device_id = Some(dev_id.to_string());
                                 registry.write().await.insert(dev_id.to_string(), payload.clone());
 
-                                // Broadcast updated presence snapshot to all peers
+                                // Broadcast updated presence snapshot to everyone on Wi-Fi
                                 broadcast_snapshot(&peers, &registry).await;
                             }
                         }
@@ -98,55 +93,12 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                                 }
                             }
                         }
-                        "JOIN_SPACE" => {
-                            if let Some(space_address) = payload.get("spaceAddress").and_then(|s| s.as_str()) {
-                                current_space = Some(space_address.to_string());
-                                let mut sp_map = spaces.write().await;
-                                let members = sp_map.entry(space_address.to_string()).or_insert_with(Vec::new);
-                                if !members.contains(&conn_id) {
-                                    members.push(conn_id.clone());
-                                }
-                                
-                                let ack = serde_json::json!({
-                                    "type": "SPACE_JOINED",
-                                    "payload": {
-                                        "spaceAddress": space_address,
-                                        "memberCount": members.len(),
-                                        "peersInSpace": members.len()
-                                    }
-                                });
-                                let _ = tx.send(Message::text(ack.to_string()));
-
-                                // Notify other peer in space
-                                let notice = serde_json::json!({
-                                    "type": "PEER_JOINED_SPACE",
-                                    "payload": {
-                                        "spaceAddress": space_address,
-                                        "connId": conn_id,
-                                        "device": payload.get("device").cloned().unwrap_or(serde_json::Value::Null)
-                                    }
-                                });
-                                broadcast_to_space(&peers, &spaces, space_address, &conn_id, Message::text(notice.to_string())).await;
-                            }
-                        }
-                        "SPACE_SIGNAL" => {
-                            if let Some(space_address) = payload.get("spaceAddress").and_then(|s| s.as_str()) {
-                                let signal = serde_json::json!({
-                                    "type": "SPACE_SIGNAL",
-                                    "payload": payload
-                                });
-                                broadcast_to_space(&peers, &spaces, space_address, &conn_id, Message::text(signal.to_string())).await;
-                            }
-                        }
                         "CONNECTION_REQUEST" => {
-                            // Forward connection request directly to target
-                            if let Some(target_id) = payload.get("targetDeviceId").and_then(|t| t.as_str()) {
-                                let forward = serde_json::json!({
-                                    "type": "INCOMING_REQUEST",
-                                    "payload": payload
-                                });
-                                broadcast_to_all_except(&peers, &conn_id, Message::text(forward.to_string())).await;
-                            }
+                            let forward = serde_json::json!({
+                                "type": "INCOMING_REQUEST",
+                                "payload": payload
+                            });
+                            broadcast_to_all_except(&peers, &conn_id, Message::text(forward.to_string())).await;
                         }
                         "CONNECTION_ACCEPT" => {
                             let auth = serde_json::json!({
@@ -156,9 +108,7 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
                                     "targetDeviceId": payload.get("targetDeviceId").unwrap_or(&serde_json::json!("")),
                                     "authorized": true,
                                     "iceServers": [
-                                        { "urls": "stun:stun.l.google.com:19302" },
-                                        { "urls": "stun:stun1.l.google.com:19302" },
-                                        { "urls": "stun:stun.cloudflare.com:3478" }
+                                        { "urls": "stun:stun.l.google.com:19302" }
                                     ]
                                 }
                             });
@@ -185,17 +135,11 @@ async fn handle_connection(ws: WebSocket, peers: PeersMap, registry: PresenceReg
         }
     }
 
-    // Cleanup on disconnect (Instant offline status for AirDrop radar)
+    // Cleanup on disconnect: remove device immediately so other peers see offline
     peers.write().await.remove(&conn_id);
     if let Some(dev_id) = registered_device_id {
         registry.write().await.remove(&dev_id);
         broadcast_snapshot(&peers, &registry).await;
-    }
-    if let Some(sp) = current_space {
-        let mut sp_map = spaces.write().await;
-        if let Some(members) = sp_map.get_mut(&sp) {
-            members.retain(|c| c != &conn_id);
-        }
     }
 }
 
@@ -204,20 +148,6 @@ fn chrono_now_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-}
-
-async fn broadcast_to_space(peers: &PeersMap, spaces: &SpaceMembersMap, space: &str, except_conn: &str, msg: Message) {
-    let sp_map = spaces.read().await;
-    if let Some(members) = sp_map.get(space) {
-        let p_map = peers.read().await;
-        for conn_id in members {
-            if conn_id != except_conn {
-                if let Some(tx) = p_map.get(conn_id) {
-                    let _ = tx.send(msg.clone());
-                }
-            }
-        }
-    }
 }
 
 async fn broadcast_snapshot(peers: &PeersMap, registry: &PresenceRegistry) {

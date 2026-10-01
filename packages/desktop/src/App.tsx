@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Shield, Send, Lock, Wifi, WifiOff, Laptop, Check, Download, 
-  FolderDown, Sparkles, Radio, MessageSquare, UserCheck
+  FolderDown, Sparkles, Radio, MessageSquare, Monitor, Smartphone, RefreshCw
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { GatewayClient, PresencePeer } from './gatewayClient.js';
@@ -9,21 +9,18 @@ import { WebRTCManager, P2PMessage } from './webrtc.js';
 import { localVault, StoredMessage } from './localVault.js';
 
 export const App: React.FC = () => {
-  // Machine Identity & Network
-  const [deviceId, setDeviceId] = useState<string>('mac-' + Math.random().toString(36).substring(2, 6));
+  // Machine Identity & Local Wi-Fi
+  const [deviceId, setDeviceId] = useState<string>('device-' + Math.random().toString(36).substring(2, 6));
   const [displayName, setDisplayName] = useState<string>('My MacBook Pro');
-  const [isGatewayConnected, setIsGatewayConnected] = useState<boolean>(false);
-  const [gatewayUrl, setGatewayUrl] = useState<string>(() => {
-    return localStorage.getItem('whispermesh_gateway_url') || 'ws://localhost:4000/v1/gateway';
-  });
+  const [lanIp, setLanIp] = useState<string>('127.0.0.1');
+  const [isMeshConnected, setIsMeshConnected] = useState<boolean>(false);
+  const [hostIpInput, setHostIpInput] = useState<string>('');
+  const [activeHostUrl, setActiveHostUrl] = useState<string>('ws://localhost:4000/v1/gateway');
 
-  // Unique Space Address (per machine)
-  const [myOwnSpaceAddress, setMyOwnSpaceAddress] = useState<string>('');
-  
-  // AirDrop-style Radar Peers (100% Dynamic)
-  const [radarPeers, setRadarPeers] = useState<PresencePeer[]>([]);
-  const [pairedPeer, setPairedPeer] = useState<PresencePeer | null>(null);
-  const [isRequestingPair, setIsRequestingPair] = useState<boolean>(false);
+  // Dynamic Devices on the Same Wi-Fi
+  const [onlineDevices, setOnlineDevices] = useState<PresencePeer[]>([]);
+  const [pairedDevice, setPairedDevice] = useState<PresencePeer | null>(null);
+  const [isPairingPending, setIsPairingPending] = useState<boolean>(false);
   const [incomingRequest, setIncomingRequest] = useState<any | null>(null);
 
   // Live P2P Chat State
@@ -36,61 +33,55 @@ export const App: React.FC = () => {
   const webrtcRef = useRef<WebRTCManager | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // 1. Initialize Machine Identity
+  // 1. Fetch Local Device Identity and Active Wi-Fi IP
   useEffect(() => {
     async function loadIdentity() {
-      let uniqueId = '';
       try {
         const idKeys = await invoke<{ device_id: string; public_key_ed25519: string }>('get_or_create_device_identity');
-        uniqueId = idKeys.device_id;
-        setDeviceId(uniqueId);
+        setDeviceId(idKeys.device_id);
       } catch (err) {
-        uniqueId = 'mac-' + Math.random().toString(36).substring(2, 8);
-        setDeviceId(uniqueId);
+        setDeviceId('mac-' + Math.random().toString(36).substring(2, 7));
       }
 
-      const cleanHash = uniqueId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
-      const generatedSpace = `SPACE-${cleanHash}`;
-      setMyOwnSpaceAddress(generatedSpace);
+      try {
+        const ip = await invoke<string>('get_lan_ip');
+        if (ip && ip.trim()) {
+          setLanIp(ip.trim());
+          setDisplayName(`MacBook (${ip.trim()})`);
+        }
+      } catch (err) {
+        console.warn('LAN IP fetch:', err);
+      }
     }
     loadIdentity();
   }, []);
 
-  // 2. Connect to Embedded Gateway & Global AirDrop Radar
+  // 2. Connect to the Wi-Fi Mesh Gateway
   useEffect(() => {
-    if (!myOwnSpaceAddress) return;
-
-    const gw = new GatewayClient(gatewayUrl, deviceId, displayName);
+    const gw = new GatewayClient(activeHostUrl, deviceId, displayName);
     gatewayRef.current = gw;
 
     gw.onConnectionStateChange = (connected) => {
-      setIsGatewayConnected(connected);
-      if (connected) {
-        gw.joinSpace(myOwnSpaceAddress, '000000');
-      }
+      setIsMeshConnected(connected);
     };
 
-    // Live AirDrop Peers: updates dynamically when laptops open/close
+    // Live Devices on Same Wi-Fi (Automatically appears when laptop opens app, disappears when closed)
     gw.onPeersUpdated = (peers) => {
       const now = Date.now();
-      const activePeers = peers.filter(p => (now - (p.lastSeenTimestamp || now)) < 20000);
-      setRadarPeers(activePeers);
+      const active = peers.filter(p => (now - (p.lastSeenTimestamp || now)) < 25000);
+      setOnlineDevices(active);
     };
 
-    // Incoming AirDrop Request Modal
+    // Incoming Pairing Request from another laptop on Wi-Fi
     gw.onIncomingRequest = (req) => {
       setIncomingRequest(req);
     };
 
-    // When connection is accepted, establish WebRTC
+    // Pairing Authorized: Begin direct WebRTC DataChannel
     gw.onSignalingAuthorized = async (auth) => {
-      setIsRequestingPair(false);
+      setIsPairingPending(false);
       if (webrtcRef.current) {
-        webrtcRef.current.initConnection(auth.iceServers || [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun.cloudflare.com:3478' }
-        ]);
+        webrtcRef.current.initConnection(auth.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }]);
         try {
           const offer = await webrtcRef.current.createOffer(auth.sessionId);
           gw.sendSignal('SIGNAL_OFFER', { sessionId: auth.sessionId, offer, senderDeviceId: deviceId });
@@ -101,20 +92,16 @@ export const App: React.FC = () => {
     };
 
     gw.onPairingRejected = () => {
-      setIsRequestingPair(false);
-      setPairedPeer(null);
-      alert('Pairing request was declined.');
+      setIsPairingPending(false);
+      setPairedDevice(null);
+      alert('The other laptop declined the pairing request.');
     };
 
     gw.onSignalReceived = async (type, payload) => {
       if (!webrtcRef.current) return;
 
       if (type === 'SIGNAL_OFFER' && payload.offer) {
-        webrtcRef.current.initConnection([
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun.cloudflare.com:3478' }
-        ]);
+        webrtcRef.current.initConnection([{ urls: 'stun:stun.l.google.com:19302' }]);
         const answer = await webrtcRef.current.handleOfferAndCreateAnswer(payload.offer);
         gw.sendSignal('SIGNAL_ANSWER', { sessionId: payload.sessionId, answer, senderDeviceId: deviceId });
       } else if (type === 'SIGNAL_ANSWER' && payload.answer) {
@@ -124,13 +111,13 @@ export const App: React.FC = () => {
       }
     };
 
-    // WebRTC Manager
+    // Native WebRTC Manager
     const rtc = new WebRTCManager(
       (type, payload) => gw.sendSignal(type, payload),
       async (p2pMsg: P2PMessage) => {
         const stored: StoredMessage = {
           id: p2pMsg.id,
-          spaceAddress: myOwnSpaceAddress,
+          spaceAddress: 'wifi-mesh',
           senderDeviceId: p2pMsg.senderDeviceId,
           senderName: p2pMsg.senderName,
           text: p2pMsg.text,
@@ -152,46 +139,54 @@ export const App: React.FC = () => {
       gw.disconnect();
       rtc.close();
     };
-  }, [myOwnSpaceAddress, gatewayUrl]);
+  }, [activeHostUrl, deviceId, displayName]);
 
   // Auto-scroll chat
   useEffect(() => {
     chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Click Pair button on any visible laptop
-  const handlePairWithPeer = (peer: PresencePeer) => {
-    setPairedPeer(peer);
-    setIsRequestingPair(true);
-    gatewayRef.current?.requestPairing(peer.deviceId);
+  // Direct Click on any laptop on the Wi-Fi
+  const handleDirectClickPair = (device: PresencePeer) => {
+    setPairedDevice(device);
+    setIsPairingPending(true);
+    gatewayRef.current?.requestPairing(device.deviceId);
   };
 
-  // Accept incoming request
+  // Accept incoming pairing request
   const handleAcceptPairing = () => {
     if (!incomingRequest) return;
     const initiator: PresencePeer = {
       deviceId: incomingRequest.initiatorDevice.deviceId,
       displayName: incomingRequest.initiatorDevice.displayName,
-      platform: incomingRequest.initiatorDevice.platform,
+      platform: incomingRequest.initiatorDevice.platform || 'macOS',
       status: 'AVAILABLE',
       lastSeenTimestamp: Date.now()
     };
-    setPairedPeer(initiator);
+    setPairedDevice(initiator);
     gatewayRef.current?.acceptPairing(incomingRequest.sessionId, initiator.deviceId);
     setIncomingRequest(null);
   };
 
-  // Decline incoming request
+  // Decline incoming pairing request
   const handleDeclinePairing = () => {
     if (!incomingRequest) return;
     gatewayRef.current?.rejectPairing(incomingRequest.sessionId);
     setIncomingRequest(null);
   };
 
+  // Switch to friend's IP if bridging directly
+  const handleConnectToFriendIp = () => {
+    if (!hostIpInput.trim()) return;
+    const cleanIp = hostIpInput.trim().replace(/^ws:\/\//, '').replace(/\/v1\/gateway$/, '');
+    const newUrl = `ws://${cleanIp}:4000/v1/gateway`;
+    setActiveHostUrl(newUrl);
+  };
+
   // Send Direct Message
   const sendP2PMessage = async () => {
     if (!inputText.trim()) return;
-    const msgId = `p2p-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const p2pMsg: P2PMessage = {
       id: msgId,
       senderDeviceId: deviceId,
@@ -202,7 +197,7 @@ export const App: React.FC = () => {
 
     const stored: StoredMessage = {
       ...p2pMsg,
-      spaceAddress: myOwnSpaceAddress,
+      spaceAddress: 'wifi-mesh',
       deliveryStatus: 'sent'
     };
 
@@ -213,14 +208,14 @@ export const App: React.FC = () => {
     webrtcRef.current?.sendMessage(p2pMsg);
   };
 
-  // Export Transcript
+  // Export Chat
   const handleDownloadTranscript = async () => {
-    const markdown = await localVault.exportChat(myOwnSpaceAddress, 'markdown');
+    const markdown = await localVault.exportChat('wifi-mesh', 'markdown');
     const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `WhisperMesh-Chat-${Date.now()}.md`;
+    a.download = `WhisperMesh-Wi-Fi-Chat-${Date.now()}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -230,24 +225,23 @@ export const App: React.FC = () => {
       display: 'flex',
       flexDirection: 'column',
       height: '100vh',
-      background: 'rgba(9, 14, 26, 0.92)',
+      background: 'rgba(9, 14, 26, 0.95)',
       backdropFilter: 'blur(40px)',
       WebkitBackdropFilter: 'blur(40px)',
       color: '#f3f4f6',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", -system-ui, sans-serif',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif',
       userSelect: 'none',
       overflow: 'hidden',
       position: 'relative'
     }}>
-      {/* Native macOS Overlay Header */}
+      {/* Top Header */}
       <header data-tauri-drag-region style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         padding: '14px 24px 14px 80px',
         borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-        background: 'rgba(15, 23, 42, 0.5)',
-        backdropFilter: 'blur(20px)'
+        background: 'rgba(15, 23, 42, 0.6)'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
@@ -264,16 +258,16 @@ export const App: React.FC = () => {
           </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.5px' }}>WhisperMesh</span>
+              <span style={{ fontSize: 15, fontWeight: 700 }}>WhisperMesh</span>
               <span style={{ fontSize: 10, background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', border: '1px solid rgba(52, 211, 153, 0.3)', padding: '2px 8px', borderRadius: 12, fontWeight: 600 }}>
-                AIRDROP MESH
+                WI-FI MESH
               </span>
             </div>
-            <div style={{ fontSize: 11, color: '#6b7280' }}>Zero Configuration • Direct Laptop-to-Laptop Connection</div>
+            <div style={{ fontSize: 11, color: '#6b7280' }}>Local Wi-Fi / Hotspot Shield Network • Direct Device Pairing</div>
           </div>
         </div>
 
-        {/* Status Pills */}
+        {/* Local Wi-Fi Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
             display: 'flex',
@@ -282,12 +276,12 @@ export const App: React.FC = () => {
             fontSize: 12,
             padding: '5px 12px',
             borderRadius: 20,
-            background: isGatewayConnected ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-            border: `1px solid ${isGatewayConnected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-            color: isGatewayConnected ? '#34d399' : '#f87171'
+            background: isMeshConnected ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+            border: `1px solid ${isMeshConnected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+            color: isMeshConnected ? '#34d399' : '#f87171'
           }}>
-            {isGatewayConnected ? <Wifi style={{ width: 14, height: 14 }} /> : <WifiOff style={{ width: 14, height: 14 }} />}
-            <span>{isGatewayConnected ? 'Mesh Active' : 'Connecting...'}</span>
+            {isMeshConnected ? <Wifi style={{ width: 14, height: 14 }} /> : <WifiOff style={{ width: 14, height: 14 }} />}
+            <span>{isMeshConnected ? `Wi-Fi Online (${lanIp})` : 'Offline'}</span>
           </div>
 
           <div style={{
@@ -307,7 +301,7 @@ export const App: React.FC = () => {
       </header>
 
       {/* ========================================================================= */}
-      {/* AIRDROP INCOMING PAIRING CARD (DROPS DOWN FROM TOP)                       */}
+      {/* INCOMING PAIRING REQUEST MODAL (SLIDES DOWN FROM TOP)                      */}
       {/* ========================================================================= */}
       {incomingRequest && (
         <div style={{
@@ -345,7 +339,7 @@ export const App: React.FC = () => {
               Pairing Request from {incomingRequest.initiatorDevice.displayName}
             </div>
             <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 3 }}>
-              Connect directly laptop-to-laptop over encrypted WebRTC?
+              Connect directly on the same Wi-Fi network?
             </div>
           </div>
 
@@ -388,48 +382,48 @@ export const App: React.FC = () => {
       {/* Main Workspace */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         
-        {/* Left Sidebar: Live AirDrop Radar */}
+        {/* Left Sidebar: Visible Devices on Same Wi-Fi */}
         <aside style={{
           width: 320,
           borderRight: '1px solid rgba(255, 255, 255, 0.08)',
-          background: 'rgba(11, 17, 32, 0.75)',
+          background: 'rgba(11, 17, 32, 0.8)',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
           padding: 20
         }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             
-            {/* AirDrop Radar Section Title */}
+            {/* Devices on Wi-Fi Section */}
             <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Radio style={{ width: 16, height: 16, color: '#34d399' }} />
                   <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#e5e7eb' }}>
-                    AirDrop Devices
+                    Same Wi-Fi Devices
                   </span>
                 </div>
                 <span style={{
                   fontSize: 11,
-                  background: radarPeers.length > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
-                  color: radarPeers.length > 0 ? '#34d399' : '#9ca3af',
+                  background: onlineDevices.length > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
+                  color: onlineDevices.length > 0 ? '#34d399' : '#9ca3af',
                   padding: '2px 8px',
                   borderRadius: 10,
                   fontWeight: 700
                 }}>
-                  {radarPeers.length} ONLINE
+                  {onlineDevices.length} ON WI-FI
                 </span>
               </div>
               <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-                Active laptops discoverable over the network.
+                Laptops, Macs, or PCs connected to this Wi-Fi network.
               </div>
             </div>
 
-            {/* Dynamic Live Laptop Bubbles */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {radarPeers.length === 0 ? (
+            {/* List of Visible Devices */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {onlineDevices.length === 0 ? (
                 <div style={{
-                  padding: '30px 16px',
+                  padding: '28px 16px',
                   borderRadius: 14,
                   background: 'rgba(255, 255, 255, 0.02)',
                   border: '1px dashed rgba(255, 255, 255, 0.08)',
@@ -437,17 +431,17 @@ export const App: React.FC = () => {
                   color: '#6b7280'
                 }}>
                   <Laptop style={{ width: 36, height: 36, margin: '0 auto 10px auto', color: '#4b5563' }} />
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#9ca3af' }}>Looking for devices...</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#9ca3af' }}>Waiting for nearby laptops...</div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6, lineHeight: 1.4 }}>
-                    When your friend opens WhisperMesh, their laptop will appear here automatically.
+                    When another person on this Wi-Fi or Hotspot opens WhisperMesh, their laptop will appear here.
                   </div>
                 </div>
               ) : (
-                radarPeers.map((peer) => {
-                  const isCurrentlyPaired = pairedPeer?.deviceId === peer.deviceId;
+                onlineDevices.map((device) => {
+                  const isCurrentlyPaired = pairedDevice?.deviceId === device.deviceId;
                   return (
                     <div
-                      key={peer.deviceId}
+                      key={device.deviceId}
                       style={{
                         padding: 14,
                         borderRadius: 14,
@@ -486,9 +480,9 @@ export const App: React.FC = () => {
                         </div>
 
                         <div>
-                          <div style={{ fontWeight: 700, fontSize: 14, color: '#ffffff' }}>{peer.displayName}</div>
+                          <div style={{ fontWeight: 700, fontSize: 14, color: '#ffffff' }}>{device.displayName}</div>
                           <div style={{ fontSize: 11, color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span>● Live Now</span>
+                            <span>● Connected on Wi-Fi</span>
                           </div>
                         </div>
                       </div>
@@ -505,12 +499,12 @@ export const App: React.FC = () => {
                           padding: '6px 12px',
                           borderRadius: 8
                         }}>
-                          <Check style={{ width: 14, height: 14 }} /> Connected
+                          <Check style={{ width: 14, height: 14 }} /> Paired
                         </div>
                       ) : (
                         <button
-                          onClick={() => handlePairWithPeer(peer)}
-                          disabled={isRequestingPair}
+                          onClick={() => handleDirectClickPair(device)}
+                          disabled={isPairingPending}
                           style={{
                             padding: '7px 16px',
                             borderRadius: 8,
@@ -527,7 +521,7 @@ export const App: React.FC = () => {
                           }}
                         >
                           <Sparkles style={{ width: 12, height: 12 }} />
-                          <span>{isRequestingPair && pairedPeer?.deviceId === peer.deviceId ? 'Connecting...' : 'Pair'}</span>
+                          <span>{isPairingPending && pairedDevice?.deviceId === device.deviceId ? 'Connecting...' : 'Pair'}</span>
                         </button>
                       )}
                     </div>
@@ -535,9 +529,62 @@ export const App: React.FC = () => {
                 })
               )}
             </div>
+
+            {/* Direct Connect to Friend's IP (if on Hotspot Shield or separate subnet) */}
+            <div style={{
+              padding: 12,
+              borderRadius: 10,
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase' }}>
+                Join Friend's Hotspot / Wi-Fi IP
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="text"
+                  placeholder="e.g. 192.168.1.150"
+                  value={hostIpInput}
+                  onChange={(e) => setHostIpInput(e.target.value)}
+                  style={{
+                    flex: 1,
+                    background: 'rgba(0,0,0,0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: 6,
+                    padding: '6px 8px',
+                    fontSize: 12,
+                    color: '#fff',
+                    outline: 'none',
+                    fontFamily: 'monospace'
+                  }}
+                />
+                <button
+                  onClick={handleConnectToFriendIp}
+                  style={{
+                    background: '#2563eb',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '6px 12px',
+                    color: '#fff',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Join
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: '#6b7280' }}>
+                Your IP: <b style={{ color: '#34d399' }}>{lanIp}</b> (Port 4000)
+              </div>
+            </div>
+
           </div>
 
-          {/* Bottom Sidebar: Vault Download */}
+          {/* Bottom Sidebar: Chat Download */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: 16 }}>
             <button
               onClick={handleDownloadTranscript}
@@ -563,7 +610,7 @@ export const App: React.FC = () => {
           </div>
         </aside>
 
-        {/* Center: Live P2P Chat Stream */}
+        {/* Center: Live Tauri Chat Stream */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           
           {/* Header Bar */}
@@ -585,10 +632,10 @@ export const App: React.FC = () => {
               }}></div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>
-                  {pairedPeer ? `Chatting with ${pairedPeer.displayName}` : 'AirDrop P2P Chat'}
+                  {pairedDevice ? `Direct Chat with ${pairedDevice.displayName}` : 'Tauri Wi-Fi Chatting Panel'}
                 </div>
                 <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                  WebRTC Tunnel: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b> • 100% Local Storage
+                  WebRTC Direct: <b style={{ color: p2pState === 'connected' ? '#34d399' : '#fbbf24' }}>{p2pState.toUpperCase()}</b> • 100% Local Device Storage
                 </div>
               </div>
             </div>
@@ -617,11 +664,11 @@ export const App: React.FC = () => {
               <div style={{ margin: 'auto', textAlign: 'center', color: '#6b7280' }}>
                 <Lock style={{ width: 44, height: 44, margin: '0 auto 12px auto', color: '#374151' }} />
                 <div style={{ fontSize: 16, fontWeight: 600, color: '#9ca3af', marginBottom: 6 }}>
-                  {pairedPeer ? 'Connected! Send your first message below.' : 'AirDrop Discovery Active'}
+                  {pairedDevice ? 'Devices Paired! Ready to chat.' : 'Same Wi-Fi Mesh Discovery Active'}
                 </div>
                 <div style={{ fontSize: 13, maxWidth: 440, margin: '0 auto', lineHeight: 1.5 }}>
-                  {pairedPeer 
-                    ? 'Your connection is end-to-end encrypted directly laptop-to-laptop.'
+                  {pairedDevice 
+                    ? 'Type a message below to chat directly across your laptops over the Wi-Fi connection.'
                     : 'Click "Pair" on your friend’s laptop card in the left sidebar to connect directly.'}
                 </div>
               </div>
@@ -664,13 +711,13 @@ export const App: React.FC = () => {
           <div style={{
             padding: '16px 24px',
             borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-            background: 'rgba(11, 17, 32, 0.75)',
+            background: 'rgba(11, 17, 32, 0.8)',
             display: 'flex',
             gap: 12
           }}>
             <input
               type="text"
-              placeholder={p2pState === 'connected' ? 'Type message over direct WebRTC...' : 'Pair with an active laptop to send direct message...'}
+              placeholder={p2pState === 'connected' ? 'Type message to your friend...' : 'Pair with a laptop on your Wi-Fi to start chatting...'}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && sendP2PMessage()}
