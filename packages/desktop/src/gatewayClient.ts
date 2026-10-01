@@ -1,7 +1,7 @@
 /**
  * @file gatewayClient.ts
- * @description Real-time WebSocket Gateway Client for WhisperMesh desktop app.
- * Connects to the local/remote Fastify signaling server for dynamic peer presence & pairing negotiation.
+ * @description Real-time WebSocket Gateway & Space Broker Client for WhisperMesh.
+ * Enables both dynamic LAN presence and Global Space Address pairing across different networks.
  */
 
 export interface PresencePeer {
@@ -16,6 +16,7 @@ export type PresenceListener = (peers: PresencePeer[]) => void;
 export type PairingChallengeListener = (challenge: { sessionId: string; pairingCode: string; expiresAt: number }) => void;
 export type PairingAuthListener = (auth: { sessionId: string; authorized: boolean; iceServers: RTCIceServer[] }) => void;
 export type SignalListener = (type: string, payload: any) => void;
+export type SpaceJoinedListener = (info: { spaceAddress: string; memberCount: number }) => void;
 
 export class GatewayClient {
   private socket: WebSocket | null = null;
@@ -30,6 +31,8 @@ export class GatewayClient {
   public onSignalReceived: SignalListener | null = null;
   public onIncomingRequest: ((req: { sessionId: string; initiatorDevice: any }) => void) | null = null;
   public onConnectionStateChange: ((connected: boolean) => void) | null = null;
+  public onSpaceJoined: SpaceJoinedListener | null = null;
+  public onPeerJoinedSpace: ((peer: any) => void) | null = null;
 
   constructor(url: string, deviceId: string, displayName: string) {
     this.url = url;
@@ -39,29 +42,28 @@ export class GatewayClient {
 
   public connect(): void {
     if (this.socket) {
-      this.socket.close();
+      try { this.socket.close(); } catch (_) {}
     }
 
     try {
       this.socket = new WebSocket(this.url);
 
       this.socket.onopen = () => {
-        console.log('[GatewayClient] Connected to Signaling Gateway at', this.url);
+        console.log('[GatewayClient] Connected to Space Broker at', this.url);
         this.onConnectionStateChange?.(true);
         this.registerPresence();
         this.startHeartbeat();
       };
 
       this.socket.onclose = () => {
-        console.log('[GatewayClient] Disconnected from Signaling Gateway');
+        console.log('[GatewayClient] Disconnected from Space Broker. Auto-reconnecting in 3s...');
         this.onConnectionStateChange?.(false);
         this.stopHeartbeat();
-        // Reconnect after 3 seconds
         setTimeout(() => this.connect(), 3000);
       };
 
       this.socket.onerror = (err) => {
-        console.warn('[GatewayClient] Gateway socket warning:', err);
+        console.warn('[GatewayClient] Broker warning:', err);
       };
 
       this.socket.onmessage = (event) => {
@@ -110,6 +112,26 @@ export class GatewayClient {
     }
   }
 
+  public joinSpace(spaceAddress: string, otp: string): void {
+    this.send('JOIN_SPACE', {
+      spaceAddress,
+      otp,
+      device: {
+        deviceId: this.deviceId,
+        displayName: this.displayName
+      }
+    });
+  }
+
+  public sendSpaceSignal(spaceAddress: string, signalType: string, signalPayload: any): void {
+    this.send('SPACE_SIGNAL', {
+      spaceAddress,
+      signalType,
+      signalPayload,
+      senderDeviceId: this.deviceId
+    });
+  }
+
   public requestPairing(targetDeviceId: string): string {
     const sessionId = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     this.send('CONNECTION_REQUEST', {
@@ -127,69 +149,67 @@ export class GatewayClient {
   public acceptPairing(sessionId: string, initiatorDeviceId: string): void {
     this.send('CONNECTION_ACCEPT', {
       sessionId,
-      recipientDevice: {
-        deviceId: this.deviceId,
-        displayName: this.displayName,
-        platform: 'macOS'
-      }
+      targetDeviceId: initiatorDeviceId
     });
   }
 
   public confirmPairingCode(sessionId: string): void {
-    this.send('PAIRING_CONFIRM', { sessionId });
+    this.send('PAIRING_CONFIRM', {
+      sessionId
+    });
   }
 
   public sendSignal(type: string, payload: any): void {
     this.send(type, payload);
   }
 
-  public send(type: string, payload: any): void {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({
-        type,
-        messageId: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        timestamp: Date.now(),
-        payload
-      }));
+  private send(type: string, payload: any): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type, payload }));
     }
   }
 
   private handleInboundEnvelope(envelope: { type: string; payload: any }): void {
-    const { type, payload } = envelope;
-
-    switch (type) {
+    switch (envelope.type) {
       case 'PRESENCE_SNAPSHOT':
-        if (payload.peers && this.onPeersUpdated) {
-          this.onPeersUpdated(payload.peers.filter((p: PresencePeer) => p.deviceId !== this.deviceId));
+        if (envelope.payload?.peers) {
+          const filtered = (envelope.payload.peers as PresencePeer[]).filter(
+            (p) => p.deviceId !== this.deviceId
+          );
+          this.onPeersUpdated?.(filtered);
         }
         break;
 
-      case 'PRESENCE_UPDATE':
-        // Requests a fresh snapshot
-        this.send('PRESENCE_REGISTER', {
-          deviceId: this.deviceId,
-          displayName: this.displayName,
-          platform: 'macOS',
-          status: 'AVAILABLE'
-        });
-        break;
-
       case 'INCOMING_REQUEST':
-        this.onIncomingRequest?.(payload);
+        this.onIncomingRequest?.(envelope.payload);
         break;
 
       case 'PAIRING_CHALLENGE':
-        this.onPairingChallenge?.(payload);
+        this.onPairingChallenge?.(envelope.payload);
         break;
 
       case 'SIGNALING_AUTHORIZED':
-        this.onSignalingAuthorized?.(payload);
+        this.onSignalingAuthorized?.(envelope.payload);
+        break;
+
+      case 'SPACE_JOINED':
+        this.onSpaceJoined?.(envelope.payload);
+        break;
+
+      case 'PEER_JOINED_SPACE':
+        this.onPeerJoinedSpace?.(envelope.payload);
+        break;
+
+      case 'SPACE_SIGNAL':
+        if (envelope.payload?.signalType && envelope.payload?.signalPayload) {
+          this.onSignalReceived?.(envelope.payload.signalType, envelope.payload.signalPayload);
+        }
         break;
 
       case 'SIGNAL_OFFER':
       case 'SIGNAL_ANSWER':
       case 'SIGNAL_ICE':
-        this.onSignalReceived?.(type, payload);
+        this.onSignalReceived?.(envelope.type, envelope.payload);
         break;
 
       default:
