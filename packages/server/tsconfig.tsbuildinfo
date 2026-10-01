@@ -1,0 +1,1 @@
+{"root":["./src/index.ts","./src/gateway/gateway.ts","./src/pairing/pairing.ts","./src/presence/presence.ts"],"version":"5.9.3"}

@@ -1,0 +1,23 @@
+services:
+  # Ephemeral Redis Presence & State Cache
+  redis:
+    image: redis:7.4-alpine
+    container_name: whispermesh-redis
+    command: redis-server --appendonly no --save "" --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # coturn STUN / TURN Relay
+  coturn:
+    image: coturn/coturn:latest
+    container_name: whispermesh-coturn
+    network_mode: "host"
+    restart: unless-stopped
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro

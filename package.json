@@ -1,0 +1,16 @@
+{
+  "name": "whispermesh-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhisperMesh - Cross-platform P2P presence, messaging and edge AI mesh",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "dev:server": "pnpm --filter @whispermesh/server dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
