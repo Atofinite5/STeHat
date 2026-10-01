@@ -4,6 +4,7 @@
 - **Product:** WhisperMesh (STeHat)
 - **Repository:** [https://github.com/Atofinite5/STeHat](https://github.com/Atofinite5/STeHat)
 - **Status:** Initialized & Remote Configured
+- **Technology Stack:** Rust, Tauri 2, Swift, TypeScript, LangChain & LangGraph
 - **Created Date:** 2026-09-26
 - **Last Updated:** 2026-10-02
 
@@ -23,7 +24,7 @@ To maintain production stability as the project scales, the repository follows a
   - Changes arrive via PRs merged from `dev`.
 - **`dev` (Active Development / Default Working Branch):**
   - Daily integration branch where all new features, refactors, and core modules land.
-  - Feature branches (e.g., `feat/protocol-codec`, `feat/fastify-presence`, `feat/tauri-core`) branch off `dev` and merge back into `dev` via Pull Requests.
+  - Feature branches (e.g., `feat/protocol-codec`, `feat/fastify-presence`, `feat/tauri-core`, `feat/langgraph-agent`) branch off `dev` and merge back into `dev` via Pull Requests.
 
 ---
 
@@ -31,43 +32,44 @@ To maintain production stability as the project scales, the repository follows a
 
 | Component | Status | Progress | Notes |
 | :--- | :--- | :--- | :--- |
-| **Specifications (PRD)** | Complete | 100% | Full PRD defined and committed in [PRD.md](file:///Users/bhargavkalambhe/Desktop/stehat/PRD.md) |
-| **Execution Plan** | Complete | 100% | Detailed milestone roadmap defined in [EXECUTION_PLAN.md](file:///Users/bhargavkalambhe/Desktop/stehat/EXECUTION_PLAN.md) |
+| **Specifications (PRD v1.1)** | Complete | 100% | Integrated Rust, Tauri 2, Swift & LangGraph specifications in [PRD.md](file:///Users/bhargavkalambhe/Desktop/stehat/PRD.md) |
+| **Execution Plan (v1.1)** | Complete | 100% | 6-milestone roadmap updated in [EXECUTION_PLAN.md](file:///Users/bhargavkalambhe/Desktop/stehat/EXECUTION_PLAN.md) |
 | **Git & Remote Repo** | Complete | 100% | GitHub repo `Atofinite5/STeHat` created with `main`, `staging`, and `dev` branches |
-| **Shared Protocol** | Ready for Implementation | 0% | Schemas, opcodes, MessagePack codecs |
+| **Shared Protocol** | In Progress | 10% | TypeScript & Rust binary codecs and opcodes |
 | **Backend & Signaling** | Ready for Implementation | 0% | Fastify, Redis Ephemeral Presence, Pairing Engine |
 | **Infrastructure Stack** | Ready for Implementation | 0% | Docker compose with Redis, Postgres, coturn STUN/TURN |
-| **Desktop App (Tauri 2)** | Ready for Implementation | 0% | Rust crypto core + React UI |
-| **Mobile App (React Native)**| Planned | 0% | Phase 3 deliverable |
+| **Desktop App (Tauri 2 + Rust)** | Ready for Implementation | 0% | Rust crypto core + React UI |
+| **Native iOS App (Swift)** | Ready for Implementation | 0% | Swift 6, CryptoKit, SwiftUI, MLX |
+| **Local Edge AI (LangGraph)** | Ready for Implementation | 0% | StateGraph, local graph index, privacy guardrail |
 
 ---
 
 ## 3. Activity Changelog
 
+### [2026-10-02] — Multi-Language Architecture & LangGraph Integration
+- **Stack Evolution Finalized:** Formally integrated **Rust**, **Tauri 2**, **Swift**, **TypeScript**, and **LangChain / LangGraph** into core architecture:
+  - **Rust:** Cryptography, secure storage bridging, high-performance binary codecs, Tauri 2 backend.
+  - **Tauri 2:** Lightweight cross-platform desktop shell.
+  - **Swift:** Native iOS application shell, SwiftUI, and Apple Silicon Neural Engine / MLX bindings.
+  - **LangGraph & LangChain:** Cyclic `StateGraph` for local edge intelligence, local graph memory indexing, and autonomous peer actions with zero cloud data transmission.
+- Updated [`PRD.md`](file:///Users/bhargavkalambhe/Desktop/stehat/PRD.md), [`EXECUTION_PLAN.md`](file:///Users/bhargavkalambhe/Desktop/stehat/EXECUTION_PLAN.md), and generated architecture blueprint artifact.
+- Prepared monorepo layout accommodating `packages/protocol`, `packages/agent`, `packages/server`, `packages/desktop`, and `packages/ios`.
+
 ### [2026-10-02] — Repository Setup & Branching Strategy
 - Switched active GitHub CLI identity to account **`Atofinite5`**.
 - Created public remote GitHub repository: [https://github.com/Atofinite5/STeHat](https://github.com/Atofinite5/STeHat).
-- Configured three-tier Git branching model:
-  - `main`: Production release branch.
-  - `staging`: Integration and pre-release testing branch.
-  - `dev`: Active development trunk.
-- Pushed initial project specifications, PRD, and execution plan across all three branches.
-- Switched working branch to `dev` for upcoming feature implementation.
+- Configured three-tier Git branching model (`main`, `staging`, `dev`).
+- Pushed initial project specifications across all three branches.
+- Switched working branch to `dev` for active development.
 
 ### [2026-09-26] — Initial Release & Architecture Setup
-- **PRD Finalized:** Authored complete Product Requirements Document covering:
-  - Global cross-network presence architecture (independent of LAN).
-  - Single-use, rate-limited, short-lived 6-digit pairing code verification mechanism.
-  - Hybrid WebRTC data plane (Direct P2P DataChannels + TURN fallback).
-  - Zero server-side message persistence and cryptographic device identity.
-  - Multi-platform requirements: macOS, Windows, Android, iOS.
-- **Execution Plan Published:** Formulated 5-milestone engineering breakdown with repository monorepo structure, WBS, and immediate next steps.
-- **Project Tracking Setup:** Initialized live tracking log in `PROJECT_LOG.md`.
+- Authored initial Product Requirements Document and milestone execution plan.
 
 ---
 
-## 4. Active Work Items (Next Sprint on `dev`)
-- [ ] Initialize repository structure and root tooling on `dev`.
-- [ ] Implement `packages/protocol`: Types, wire format specifications, and binary codecs.
+## 4. Active Work Items (Sprint 1 on `dev`)
+- [ ] Initialize root monorepo tooling: `pnpm-workspace.yaml`, root `package.json`, and TypeScript configs.
+- [ ] Implement `packages/protocol`: MessagePack binary codecs, Ed25519 signatures, and wire types.
 - [ ] Implement `infrastructure/docker-compose.yml` with Redis and coturn configurations.
 - [ ] Build Fastify WebSocket gateway and Redis presence manager.
+- [ ] Scaffold `packages/desktop` (Tauri 2 + Rust + React) and `packages/agent` (LangGraph).

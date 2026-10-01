@@ -1,11 +1,13 @@
 # WhisperMesh — Engineering Execution Plan
 
 ## 1. Executive Summary
-This document outlines the concrete technical execution roadmap, module architecture, repository layout, and task breakdown for building **WhisperMesh** according to the [PRD](file:///Users/bhargavkalambhe/Desktop/stehat/PRD.md).
+This document outlines the concrete technical execution roadmap, module architecture, repository layout, and task breakdown for building **WhisperMesh (STeHat)** according to the updated [PRD](file:///Users/bhargavkalambhe/Desktop/stehat/PRD.md).
+
+The technical implementation unites **Rust, Tauri 2, Swift, TypeScript, and LangGraph/LangChain** into a cohesive monorepo structure.
 
 ---
 
-## 2. Repository Layout & Target Monorepo Structure
+## 2. Monorepo Structure
 
 ```
 stehat/
@@ -20,6 +22,14 @@ stehat/
 │   │   │   ├── codec.ts           # MessagePack serializer/deserializer
 │   │   │   └── crypto.ts          # Common cryptographic wrappers
 │   │   └── package.json
+│   ├── agent/                     # Local LangGraph & LangChain Edge Engine
+│   │   ├── src/
+│   │   │   ├── graph/             # StateGraph workflow definition & nodes
+│   │   │   ├── memory/            # Local graph index & vector memory
+│   │   │   ├── security/          # Context privacy & key leak prevention filter
+│   │   │   ├── tools/             # P2P mesh action tools
+│   │   │   └── index.ts           # Agent execution runner
+│   │   └── package.json
 │   ├── server/                    # Signaling & Presence Server (Fastify + Redis)
 │   │   ├── src/
 │   │   │   ├── gateway/           # WebSocket gateway handler
@@ -29,24 +39,26 @@ stehat/
 │   │   │   └── index.ts           # Server entrypoint
 │   │   ├── Dockerfile
 │   │   └── package.json
-│   ├── desktop/                   # Desktop Application (Tauri 2 + React + Rust)
-│   │   ├── src-tauri/             # Native Rust Core
+│   ├── desktop/                   # Desktop Application (Tauri 2 + Rust + React)
+│   │   ├── src-tauri/             # Native Rust Core Engine
 │   │   │   ├── src/
 │   │   │   │   ├── crypto.rs      # Ed25519 & X25519 key generation via Rust
 │   │   │   │   ├── storage.rs     # OS Keychain / Credential Manager storage
+│   │   │   │   ├── p2p.rs         # Native WebRTC DataChannel engine
 │   │   │   │   └── main.rs        # Tauri IPC commands & entrypoint
 │   │   │   └── Cargo.toml
-│   │   ├── src/                   # React + TypeScript Frontend
-│   │   │   ├── components/        # Presence list, modals, chat window
-│   │   │   ├── hooks/             # useWebRTC, usePresence, usePairing
+│   │   ├── src/                   # React 19 + TypeScript Frontend
+│   │   │   ├── components/        # Presence list, modals, chat window, agent panel
+│   │   │   ├── hooks/             # useWebRTC, usePresence, usePairing, useAgent
 │   │   │   └── App.tsx
 │   │   └── package.json
-│   └── mobile/                    # Mobile Application (React Native)
-│       ├── src/
-│       │   ├── components/        # Mobile views matching desktop UX
-│       │   ├── native/            # Keychain/Keystore native bindings
-│       │   └── hooks/             # Shared state & WebRTC hooks
-│       └── package.json
+│   └── ios/                       # Native iOS Client (Swift 6 + SwiftUI)
+│       ├── WhisperMesh/
+│       │   ├── Core/              # Swift CryptoKit & Keychain bindings
+│       │   ├── WebRTC/            # Native WebRTC DataChannel manager
+│       │   ├── Views/             # SwiftUI native user interface
+│       │   └── MLX/               # Apple Silicon Neural Engine / MLX local inference
+│       └── WhisperMesh.xcodeproj
 └── infrastructure/
     ├── docker-compose.yml         # Local stack (Fastify, Redis, Postgres, coturn)
     └── coturn/
@@ -61,7 +73,7 @@ stehat/
 - [ ] **M1.1 — Protocol Definition:**
   - Define binary MessagePack schemas and TypeScript interfaces for all opcodes:
     `PING`, `PONG`, `TEXT`, `ACK`, `DELIVERED`, `TYPING`, `DISCONNECT`, `CONNECTION_REQUEST`, `CONNECTION_ACCEPT`, `CONNECTION_REJECT`, `OFFER`, `ANSWER`, `ICE_CANDIDATE`.
-  - Implement serialization, deserialization, and signature validation functions.
+  - Implement serialization, deserialization, and Ed25519 signature validation.
 - [ ] **M1.2 — Local Infrastructure & Containers:**
   - Create `docker-compose.yml` defining Redis, PostgreSQL, and coturn STUN/TURN server.
   - Configure `turnserver.conf` with long-term credential mechanism and UDP/TCP ports.
@@ -95,31 +107,41 @@ stehat/
   - Connection Request modal & 6-digit pairing code verification view.
   - Active Chat view with real-time delivery ticks, connection type indicator (`Direct P2P` vs `TURN Relayed`), and Disconnect action.
 
-### Milestone 4: Mobile Client (React Native)
-- [ ] **M4.1 — React Native Setup & Native Security:**
-  - Scaffold React Native application targeting iOS and Android.
-  - Implement native secure storage modules (Android Keystore, iOS Keychain).
-- [ ] **M4.2 — Native WebRTC Integration:**
-  - Integrate `react-native-webrtc` and bind shared protocol codecs.
-  - Implement background/foreground connection resilience and socket wakeups.
-- [ ] **M4.3 — Mobile UI Parity:**
-  - Build responsive mobile screens mirroring desktop UX and interaction flows.
+### Milestone 4: Native Apple Client (Swift + SwiftUI for iOS & macOS)
+- [ ] **M4.1 — Swift Native Security & CryptoKit:**
+  - Implement hardware-backed Keychain storage (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
+  - Implement Ed25519 and X25519 key management using Apple's `CryptoKit`.
+- [ ] **M4.2 — Native WebRTC & Signaling:**
+  - Integrate native WebRTC C++ framework for iOS.
+  - Connect to Fastify WebSocket signaling and execute pairing flow.
+- [ ] **M4.3 — SwiftUI User Interface:**
+  - Fluid iOS design system matching desktop wire protocol.
 
-### Milestone 5: Cross-Network E2E Testing, Hardening & Packaging
-- [ ] **M5.1 — Cross-Network Validation:**
+### Milestone 5: Local Edge AI Engine (LangChain & LangGraph)
+- [ ] **M5.1 — Local Graph Memory Index:**
+  - Implement local vector memory and relational graph index stored locally on client.
+- [ ] **M5.2 — LangGraph StateGraph Workflow:**
+  - Build cyclic `StateGraph` with nodes: `IngestContext`, `SecurityFilter`, `RetrieveGraphMemory`, `ReasonWithLocalLLM`, `ExecutePeerAction`, `SynthesizeResponse`.
+  - Implement the privacy guardrail node ensuring zero private key / network leaks.
+- [ ] **M5.3 — Local Model Drivers:**
+  - Integrate Apple MLX driver for Apple Silicon and Ollama / Llama.cpp driver for cross-platform desktop.
+
+### Milestone 6: Hardening, Cross-Platform Validation & Release Packaging
+- [ ] **M6.1 — Cross-Network Validation:**
   - Verify peer-to-peer connectivity across distinct external networks (Cellular vs. Home Wi-Fi).
   - Validate TURN fallback under simulated Symmetric NAT restrictions.
-- [ ] **M5.2 — Security & Leak Testing:**
+- [ ] **M6.2 — Security & Leak Testing:**
   - Verify zero plaintext leaks on signaling server and coturn relay logs.
   - Verify in-memory message history wipe upon session teardown.
-- [ ] **M5.3 — Build & Distribution:**
+- [ ] **M6.3 — Build & Distribution:**
   - Configure GitHub Actions for building signed macOS `.dmg` and Windows `.msi`.
-  - Generate release Android `.apk` and iOS TestFlight bundle.
+  - Generate release iOS TestFlight archive.
 
 ---
 
 ## 4. Immediate Next Execution Steps
-1. Initialize repository workspace configuration and core documentation.
-2. Build `packages/protocol` containing the shared message types, opcodes, and serialization code.
-3. Scaffold `packages/server` with Fastify, WebSocket gateway, Redis presence store, and coturn orchestration.
-4. Scaffold `packages/desktop` using Tauri 2 + Rust + React.
+1. Commit updated specifications and architecture to `origin/dev`.
+2. Scaffold root monorepo tooling: `pnpm-workspace.yaml`, root `package.json`, and shared TypeScript configs.
+3. Build `packages/protocol` containing the shared message types, opcodes, and serialization code.
+4. Scaffold `packages/server` with Fastify, WebSocket gateway, Redis presence store, and coturn orchestration.
+5. Scaffold `packages/desktop` using Tauri 2 + Rust + React.
