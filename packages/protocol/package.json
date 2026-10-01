@@ -1,0 +1,20 @@
+{
+  "name": "@whispermesh/protocol",
+  "version": "1.0.0",
+  "description": "Standardized wire protocol, opcodes, serialization and cryptographic types for WhisperMesh",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test dist/tests/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.0.0-beta2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
