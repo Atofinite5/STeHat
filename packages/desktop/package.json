@@ -1,0 +1,29 @@
+{
+  "name": "@whispermesh/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhisperMesh Desktop App (Tauri 2 + Rust + React)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "@whispermesh/agent": "workspace:*",
+    "@whispermesh/protocol": "workspace:*",
+    "lucide-react": "^1.16.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.7",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  }
+}

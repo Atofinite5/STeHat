@@ -2,8 +2,15 @@
   "name": "@whispermesh/protocol",
   "version": "1.0.0",
   "description": "Standardized wire protocol, opcodes, serialization and cryptographic types for WhisperMesh",
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "scripts": {
     "build": "tsc -b",
     "test": "node --test dist/tests/*.test.js",

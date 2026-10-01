@@ -7,7 +7,7 @@
 export const PROTOCOL_MAGIC_BYTE = 0x57; // ASCII 'W'
 export const PROTOCOL_VERSION_1 = 0x01;
 
-export const enum Opcode {
+export enum Opcode {
   // Session & Connection Management (0x01 - 0x0F)
   PING = 0x01,
   PONG = 0x02,
@@ -36,14 +36,14 @@ export const enum Opcode {
   AGENT_ACTION = 0x42
 }
 
-export const enum PresenceStatus {
+export enum PresenceStatus {
   AVAILABLE = 'AVAILABLE',
   CONNECTING = 'CONNECTING',
   CONNECTED = 'CONNECTED',
   OFFLINE = 'OFFLINE'
 }
 
-export const enum PlatformType {
+export enum PlatformType {
   MACOS = 'macOS',
   WINDOWS = 'Windows',
   IOS = 'iOS',
@@ -51,7 +51,7 @@ export const enum PlatformType {
   LINUX = 'Linux'
 }
 
-export const enum DeliveryState {
+export enum DeliveryState {
   SENDING = 'SENDING',
   SENT = 'SENT',
   DELIVERED = 'DELIVERED',

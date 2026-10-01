@@ -1,8 +1,25 @@
-use whispermesh_core::{CryptoEngine, IdentityKeys};
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use whispermesh_core::crypto::CryptoEngine;
+
+#[tauri::command]
+fn generate_identity(device_id: String) -> Result<String, String> {
+    let identity = CryptoEngine::generate_identity(device_id);
+    Ok(identity.public_key_ed25519)
+}
+
+#[tauri::command]
+fn sign_challenge(private_seed_b64: String, challenge: String) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+    let seed = BASE64.decode(private_seed_b64).map_err(|e| e.to_string())?;
+    CryptoEngine::sign_message(&seed, challenge.as_bytes())
+}
 
 fn main() {
-    println!("=== WhisperMesh Rust Native Core Engine ===");
-    let identity: IdentityKeys = CryptoEngine::generate_identity(uuid::Uuid::new_v4().to_string());
-    println!("Generated Hardware-backed Identity: {}", identity.device_id);
-    println!("Public Key (Ed25519): {}", identity.public_key_ed25519);
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![generate_identity, sign_challenge])
+        .run(tauri::generate_context!())
+        .expect("error while running WhisperMesh desktop application");
 }
