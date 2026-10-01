@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod embedded_gateway;
+
 use whispermesh_core::crypto::{CryptoEngine, IdentityKeys};
 use tauri::Manager;
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
@@ -22,6 +24,9 @@ fn sign_challenge(private_seed_b64: String, challenge: String) -> Result<String,
 }
 
 fn main() {
+    // Start embedded discovery broker on 127.0.0.1:4000 if no external server is present
+    embedded_gateway::spawn_embedded_gateway_if_needed(4000);
+
     tauri::Builder::default()
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
